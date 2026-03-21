@@ -1,0 +1,10 @@
+[package]
+name = "type_analysis"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+clap = "4.5"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
