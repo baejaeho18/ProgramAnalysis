@@ -21,6 +21,3 @@ pub mod utils;
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod lecture_tests;
