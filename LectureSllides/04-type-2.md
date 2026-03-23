@@ -1,1080 +1,1197 @@
-# CSE552 프로그램 분석 강의 4: 타입 분석 (2) - 상세 해설
-
-## 슬라이드 1: 제목 - CSE552 Lecture 4: Type Analysis (2)
-
-### 개념 설명
-이 강의는 제약 기반 타입 분석(constraint-based type analysis)의 후반부로, 제약을 실제로 푸는 방법과 다양한 타입 시스템에서 발생하는 문제들을 다룹니다. 이전 강의에서 배운 제약 수집 단계를 넘어, 이 강의에서는 수집된 제약들을 어떻게 체계적으로 해결하는지 알아봅니다.
-
-### 배경 지식
-- **제약 기반 타입 분석**: 프로그램으로부터 타입 제약을 자동으로 수집하고 이를 풀어서 타입을 결정하는 방식
-- **타입 변수(Type Variable)**: 아직 구체적인 타입이 정해지지 않은 미지의 타입을 나타내는 기호 (예: X, Y)
-- **제약(Constraint)**: 두 타입 또는 타입 변수 사이에 성립해야 하는 관계식 (예: X = int, Y ≤ X)
-
-### 수식/기호/코드 설명
-- 이 강의의 중심 기호들:
-  - τ: 타입을 나타내는 일반 기호
-  - X, Y: 타입 변수
-  - M: 타입 변수를 구체적인 타입에 연결하는 매핑(mapping)
-  - ◇: 튜플에서 존재하지 않는 원소를 나타내는 특수 기호
-
-### 전체적인 맥락
-CSE552는 프로그램 분석의 수학적 기초를 다루는 과목입니다. 타입 분석은 프로그램의 정확성을 보장하는 가장 기본적인 정적 분석 기법이며, 이를 통해 런타임 타입 에러를 컴파일 타임에 감지할 수 있습니다. 이 강의는 그러한 타입 분석이 실제로 어떻게 작동하는지의 기술적 세부사항을 학생들에게 제공합니다.
+# Type Analysis (2) - 상세 해설
+## CSE552 Program Analysis — Lecture 4
 
 ---
 
-## 슬라이드 2: 복습 - 제약 기반 타입 분석
+## 슬라이드 1: 제목 페이지
 
-### 개념 설명
-제약 기반 타입 분석의 기본 과정은 다음 세 단계로 이루어집니다:
+### 원문 내용
+> Type Analysis (2)
+> CSE552 Program Analysis — Lecture 4
+> Jaemin Hong
 
-1. **타입 변수 할당**: 프로그램의 각 부분(식, 변수, 함수 등)에 고유한 타입 변수를 할당합니다.
-2. **제약 수집**: 프로그램 구조와 연산을 분석하여 타입 변수 사이의 제약을 생성합니다.
-3. **제약 해결**: 수집된 모든 제약을 동시에 만족하는 타입 할당을 찾습니다.
+### 해설
 
-이 세 단계를 거쳐 프로그램의 모든 타입이 결정되고, 제약을 위반하는 경우 타입 에러를 보고합니다.
-
-### 배경 지식
-- **타입 추론 vs 타입 체크**: 타입 추론은 프로그래머가 명시적으로 타입을 표기하지 않아도 시스템이 자동으로 타입을 결정하는 것입니다. 타입 체크는 명시된 타입과 실제 사용이 일치하는지 확인하는 것입니다.
-- **단일화(Unification)**: 제약을 해결하는 핵심 알고리즘으로, 두 타입이 같아야 한다는 제약을 처리합니다.
-
-### 수식/기호/코드 설명
-```
-타입 분석 프로세스:
-프로그램 → [타입 변수 할당] → 제약 시스템 → [단일화] → 타입 할당 또는 에러
-         (각 표현에 X, Y, Z 등 부여)      (∪-Find로 해결)
-```
-
-### 전체적인 맥락
-이 강의에서 슬라이드 2는 이전 강의의 내용을 짧게 정리하여 현재 강의가 다루는 내용의 맥락을 제공합니다. 강의 4는 강의 3에서 배운 제약 수집의 다음 단계, 즉 "제약을 어떻게 풀 것인가"에 집중합니다.
+이 강의는 Type Analysis의 두 번째 부분으로, 제약 조건(constraints)을 해결하는 메커니즘과 알고리즘에 대해 다룹니다.
 
 ---
 
-## 슬라이드 3-4: 제약 해결 - 자료 구조
+## 슬라이드 2: Solving Constraints — Mechanisms
 
-### 개념 설명
-제약을 효율적으로 해결하기 위해 두 가지 핵심 자료 구조를 사용합니다:
+### 원문 내용
+> **Solving Constraints — Mechanisms**
+>
+> We use two mechanisms to express equivalences:
+> - Equivalence between type variables is expressed using union-find
+> - Equivalence between a type variable and a proper type is expressed using a mapping M from type variables to types (initially undefined for all)
+>
+> Assume that MakeSet(X) for each type variable X that occurs in the constraints is called in advance
 
-**1. Union-Find (분리 집합)**
-- 타입 변수들 간의 동치 관계를 추적합니다.
-- "X와 Y는 같은 타입이어야 한다"는 정보를 효율적으로 저장합니다.
-- 두 개의 타입 변수가 같아야 한다는 제약이 발생하면, 이들을 같은 동치류에 합칩니다.
+### 해설
 
-**2. 매핑 M (타입 변수 → 타입)**
-- 각 타입 변수의 동치류 대표원(canonical representative)에 대해, 그것이 어떤 구체적인 타입으로 바뀌었는지 기록합니다.
-- 예: M[X] = int, M[Y] = &X, M[Z] = (int, bool)
+**개념 설명**
 
-### 배경 지식
-- **동치 관계(Equivalence Relation)**: 반사성, 대칭성, 추이성을 만족하는 관계입니다. "같은 타입이어야 한다"는 관계가 동치 관계입니다.
-- **Union-Find 알고리즘**: 경로 압축과 연합 휴리스틱을 사용하여 O(α(n)) 시간에 동치 관계를 유지합니다 (여기서 α는 역 애커만 함수).
-- **대표원(Canonical Representative)**: 각 동치류에서 "공식적인" 원소로 지정되는 한 가지 타입 변수입니다.
+제약 조건을 풀기 위해 두 가지 주요 메커니즘을 사용합니다:
 
-### 수식/기호/코드 설명
-```
-Union-Find 상태 예시:
-X → Y → Z (부모 포인터 체인)
-여기서 Z가 대표원이라면, find(X) = find(Y) = find(Z) = Z
+1. **Union-Find**: 두 타입 변수가 동등하다는 정보를 관리하기 위해 사용됩니다. 예를 들어 `X = Y`라는 제약이 생기면 union-find를 통해 X와 Y를 같은 집합으로 병합합니다.
 
-매핑 M:
-M[Z] = int          // Z의 동치류가 int 타입으로 결정됨
-M[X] 미정의         // X의 동치류 대표원이 Z이므로 M[Z]를 참조
+2. **Mapping M**: 타입 변수를 구체적인 타입(proper type)에 연결하는 맵입니다. 예를 들어 `X = int`라면 `M[X] = int`로 저장합니다. 초기에는 모든 타입 변수에 대해 정의되지 않은 상태입니다.
 
-결과: X ≡ Y ≡ Z ≡ int
-```
+**배경 지식** (학부 2학년 수준)
 
-### 전체적인 맥락
-이 두 자료 구조는 서로 보완적입니다. Union-Find는 "어떤 타입 변수들이 같아야 하는가?"라는 동치 관계를 관리하고, 매핑 M은 "각 타입 변수가 정확히 어떤 타입인가?"라는 정보를 저장합니다. 함께 사용되면 매우 효율적인 타입 해결이 가능합니다.
+Union-Find는 disjoint set을 관리하는 자료구조로, 두 원소가 같은 집합에 속하는지 빠르게 확인하고, 두 집합을 합칠 수 있습니다. 이를 통해 타입 변수 간의 동등성 관계를 효율적으로 관리합니다.
+
+**전체적인 맥락**
+
+제약 조건 해결(constraint solving)은 타입 추론의 핵심입니다. 프로그램을 분석하면서 수많은 등식 제약(equality constraints)이 생기는데, 이들을 체계적으로 풀어야 최종 타입 할당을 얻을 수 있습니다.
 
 ---
 
-## 슬라이드 5-6: Resolve 알고리즘
+## 슬라이드 3: Solving Constraints — Resolve
 
-### 개념 설명
-Resolve 알고리즘은 임의의 타입 표현식을 받아서, Union-Find와 매핑 M을 이용해 그것을 완전히 풀어진 형태로 변환합니다.
+### 원문 내용
+> **Solving Constraints — Resolve**
+>
+> Resolve(T): resolves a type to its representative
+>
+> Resolve(T):
+> ```
+> if T is a type variable X :
+>     X' ← Find(X)
+>     if M[X'] is defined :
+>         return M[X']
+>     else
+>         return X'
+> else
+>     return T
+> ```
 
-**알고리즘의 두 가지 경우:**
+### 해설
 
-1. **입력이 타입 변수인 경우 (τ = X)**
-   - Union-Find에서 X의 대표원 X'을 찾습니다.
-   - M[X']이 정의되어 있으면, Resolve(M[X'])을 재귀적으로 호출합니다.
-   - M[X']이 정의되지 않았으면, X' 자체를 반환합니다.
+**개념 설명**
 
-2. **입력이 복합 타입인 경우 (τ = &τ', (τ₁,...,τₙ) 등)**
-   - 타입의 각 부분을 재귀적으로 Resolve합니다.
-   - 예: Resolve(&X) = &Resolve(X)
-   - 예: Resolve((X, int)) = (Resolve(X), int)
+`Resolve(T)` 함수는 주어진 타입 T를 그것의 대표 타입(representative)으로 변환합니다.
 
-### 배경 지식
-- **깊은 해결(Deep Resolving)**: 복합 타입의 모든 내부 타입 변수도 재귀적으로 해결하는 과정입니다.
-- **타입 표현 트리**: 복합 타입은 트리 구조로 표현될 수 있으며, Resolve는 이 트리의 모든 리프를 완전히 풀어집니다.
+동작 과정:
+- T가 타입 변수 X인 경우: Union-Find의 Find(X)를 통해 X가 속한 집합의 대표 원소 X'를 찾습니다.
+  - M[X']가 정의되어 있으면(즉, X'가 구체적인 타입에 이미 할당되었으면) 그 타입을 반환합니다.
+  - M[X']가 정의되지 않았으면 X' 자체(대표 타입 변수)를 반환합니다.
+- T가 타입 변수가 아닌 경우: T를 그대로 반환합니다.
 
-### 수식/기호/코드 설명
-```
-Resolve 의사코드:
+**배경 지식** (학부 2학년 수준)
 
-Resolve(τ) {
-  if (τ is a type variable X) {
-    X' = find(X);              // Union-Find에서 대표원 찾기
-    if (M[X'] is defined) {
-      return Resolve(M[X']);   // 매핑된 타입이 있으면 재귀
-    } else {
-      return X';               // 매핑이 없으면 대표원 자체 반환
-    }
-  } else if (τ = &τ') {
-    return &Resolve(τ');       // 참조 타입: 내부 타입 해결
-  } else if (τ = (τ₁,...,τₙ)) {
-    return (Resolve(τ₁),...,Resolve(τₙ));  // 튜플: 모든 원소 해결
-  } else {
-    return τ;                  // 기본 타입(int, bool): 그대로 반환
-  }
-}
-```
+Find(X) 연산은 Union-Find에서 경로 압축(path compression)을 사용하여 X가 속한 집합의 대표 원소를 O(α(n)) 시간에 찾습니다(α는 Ackermann 함수의 역함수로 매우 작은 값).
 
-**실행 예시:**
-```
-Union-Find: X → Y → Z (Z가 대표원)
-M[Z] = int
+**수식/기호/코드 설명**
 
-Resolve(X):
-  1. find(X) = Z
-  2. M[Z] = int가 정의됨
-  3. Resolve(int) = int
-  4. 반환: int
+- X': Find(X)로 얻은 대표 타입 변수
+- M[X']: 대표 타입 변수 X'에 할당된 구체적인 타입
 
-Resolve(&X):
-  1. &Resolve(X) 계산
-  2. Resolve(X) = int (위 예시)
-  3. 반환: &int
-```
+**전체적인 맥락**
 
-### 전체적인 맥락
-Resolve는 제약 해결 후 최종 타입을 결정하는 핵심 함수입니다. 단일화(Unify) 과정에서는 타입 변수들을 매핑하고 동치류를 만들기만 하는데, Resolve는 그 결과로부터 실제로 사용 가능한 구체적인 타입을 추출합니다.
+Resolve는 Unify 알고리즘과 DeepResolve 함수의 기본 구성 요소입니다. 타입 변수의 복잡한 연쇄를 따라가면서 최종 타입을 결정합니다.
 
 ---
 
-## 슬라이드 7-8: Unify 알고리즘
+## 슬라이드 4: Solving Constraints — Unify Algorithm (Part 1)
 
-### 개념 설명
-Unify 알고리즘은 두 타입이 같아야 한다는 제약을 처리합니다. 이것은 제약 해결의 핵심입니다.
+### 원문 내용
+> **Solving Constraints — Unify Algorithm (Part 1)**
+>
+> For each constraint T₁ = T₂, we invoke Unify(T₁, T₂)
+>
+> Unify(T₁, T₂):
+> ```
+> T₁' ← Resolve(T₁)
+> T₂' ← Resolve(T₂)
+> if T₁' = T₂' :
+>     return
+> if both T₁' and T₂' are type variables :
+>     Union(T₁', T₂')
+> else if T₁' is a type variable :
+>     if Occurs(T₁', T₂') :
+>         unification fails
+>     else
+>         M[T₁'] ← T₂'
+> ```
 
-**기본 원리:** 두 타입 τ₁과 τ₂가 같아야 한다면 (τ₁ = τ₂라는 제약), Unify(τ₁, τ₂)는 다음과 같이 처리합니다:
+### 해설
 
-1. **두 타입이 동일한 대표원으로 풀어진다면**: 이미 같은 것이므로 성공합니다.
-2. **하나가 타입 변수인 경우**: 그 변수를 다른 타입으로 매핑합니다 (occurs check 포함).
-3. **둘 다 복합 타입인 경우**: 구조가 같은지 확인하고, 해당하는 부분 타입들을 재귀적으로 Unify합니다.
-4. **위의 어느 경우도 아닌 경우**: 타입 에러를 발생합니다.
+**개념 설명**
 
-### 배경 지식
-- **단일화(Unification)**: 논리 프로그래밍과 타입 추론에서 기본적인 알고리즘입니다. 두 항(term)이 같아질 수 있는지 확인하고, 그렇다면 변수들에 어떤 값을 할당해야 하는지 결정합니다.
-- **구조적 동등성(Structural Equality)**: 두 복합 타입이 같으려면 구조가 같고 대응하는 부분 타입들이 모두 같아야 합니다.
+Unify 알고리즘은 두 타입이 동등해야 한다는 제약을 처리합니다.
 
-### 수식/기호/코드 설명
-```
-Unify 의사코드:
+동작 단계:
+1. 두 타입을 각각 Resolve하여 최종 형태로 변환합니다.
+2. 변환된 두 타입이 같으면 제약이 이미 만족되었으므로 반환합니다.
+3. 둘 다 타입 변수인 경우: Union-Find의 Union 연산으로 두 타입 변수를 같은 집합으로 묶습니다.
+4. T₁'이 타입 변수이고 T₂'는 아닌 경우:
+   - Occurs 체크를 통해 무한 타입을 방지합니다.
+   - 문제가 없으면 M[T₁'] ← T₂'로 할당합니다.
 
-Unify(τ₁, τ₂) {
-  τ₁' = Resolve(τ₁);
-  τ₂' = Resolve(τ₂);
+**배경 지식** (학부 2학년 수준)
 
-  if (τ₁' == τ₂') {
-    return success;              // 이미 같음
-  }
+Robinson's unification algorithm이 이것의 기초입니다. 두 항(term)이 동등하게 만드는 치환(substitution)을 찾는 과정입니다.
 
-  if (τ₁' is a type variable X) {
-    OccursCheck(X, τ₂');         // 발생 검사 수행
-    M[X] = τ₂';                  // X를 τ₂'로 매핑
-    return success;
-  }
+**수식/기호/코드 설명**
 
-  if (τ₂' is a type variable Y) {
-    OccursCheck(Y, τ₁');
-    M[Y] = τ₁';
-    return success;
-  }
+- T₁', T₂': Resolve된 타입들
+- Union(T₁', T₂'): 두 집합을 합치는 Union-Find 연산
 
-  if (τ₁' = &τ₁'' and τ₂' = &τ₂'') {
-    return Unify(τ₁'', τ₂'');    // 참조 타입: 내부 타입끼리 unify
-  }
+**전체적인 맥락**
 
-  if (τ₁' = (τ₁₁,...,τ₁ₙ) and τ₂' = (τ₂₁,...,τ₂ₙ)) {
-    for i = 1 to n:
-      Unify(τ₁ᵢ, τ₂ᵢ);           // 대응하는 원소들끼리 unify
-    return success;
-  }
+Unify는 타입 제약 해결의 핵심 알고리즘입니다. 프로그램 분석 단계에서 생성된 모든 등식 제약에 대해 호출되며, 이를 통해 점진적으로 타입 변수의 값을 결정합니다.
 
-  return error("Cannot unify " + τ₁' + " and " + τ₂');
-}
-```
+**추가 설명** (선택)
 
-**실행 예시:**
-```
-제약: Unify(X, int)
-
-1. τ₁' = Resolve(X) = X (매핑이 없다고 가정)
-2. τ₂' = Resolve(int) = int
-3. τ₁' ≠ τ₂'이고 τ₁'은 변수 X
-4. OccursCheck(X, int) 통과 (X가 int에 나타나지 않음)
-5. M[X] = int 설정
-6. 성공
-
-결과: X ≡ int
-```
-
-```
-제약: Unify((X, Y), (int, bool))
-
-1. 둘 다 튜플이고 길이가 같음
-2. Unify(X, int) → M[X] = int
-3. Unify(Y, bool) → M[Y] = bool
-4. 성공
-
-결과: X ≡ int, Y ≡ bool
-```
-
-### 전체적인 맥락
-Unify 알고리즘은 제약 기반 타입 분석의 핵심입니다. 모든 제약을 모아서 하나씩 또는 체계적으로 Unify에 입력하면, 프로그램의 전체 타입이 결정됩니다. 이 알고리즘이 효율적으로 작동하려면 Union-Find 자료 구조가 필수적입니다.
+실제로는 조건이 하나 더 있습니다: T₂'가 타입 변수이고 T₁'이 아닌 경우도 대칭적으로 처리해야 합니다. 이는 Part 2에서 다룹니다.
 
 ---
 
-## 슬라이드 9-10: 발생 검사 (Occurs Check)
+## 슬라이드 5: Solving Constraints — Occurs Check
 
-### 개념 설명
-발생 검사(Occurs Check)는 Unify 알고리즘에서 가장 중요한 안전 장치 중 하나입니다.
+### 원문 내용
+> **Solving Constraints — Occurs Check**
+>
+> Occurs check: checks if a type variable X occurs in a type T
+> - Prevents infinite types (e.g., X = fn(i32) → X)
+>
+> Occurs(X, T):
+> ```
+> if T is a proper type C(T₁, ..., Tₙ) :
+>     return Occurs(X, T₁) ∨ · · · ∨ Occurs(X, Tₙ)
+> if T is a type variable Y :
+>     Y' ← Find(Y)
+>     if M[Y'] is defined :
+>         return Occurs(X, M[Y'])
+>     else
+>         return Y' = X
+> ```
 
-**문제:** 만약 발생 검사를 하지 않으면 다음과 같은 상황이 발생할 수 있습니다:
-```
-Unify(X, &X)를 하면:
-→ M[X] = &X 설정
-→ Resolve(X)를 시도하면: X → &X → &(&X) → ... (무한 재귀)
-```
+### 해설
 
-이런 무한 타입(infinite type)은 타입 시스템을 망가뜨립니다.
+**개념 설명**
 
-**발생 검사의 원리:** X를 τ로 매핑하기 전에, X가 τ에 나타나는지 확인합니다. 만약 나타난다면 매핑을 거부하고 타입 에러를 보고합니다.
+Occurs 체크는 타입 변수 X가 타입 T 내에 포함되어 있는지 확인하는 함수입니다.
 
-### 배경 지식
-- **무한 구조**: 타입 시스템 외에도 다양한 자료 구조에서 발생 검사가 필요합니다. 예를 들어, 그래프나 트리에서 순환 구조를 피할 때도 비슷한 검사가 필요합니다.
-- **일계 논리(First-Order Logic)**: 논리 프로그래밍과 자동 추론 시스템에서도 발생 검사는 필수입니다.
+동작 과정:
+- T가 구체적인 타입 C(T₁, ..., Tₙ)인 경우: 모든 부분 타입 T₁, ..., Tₙ에 대해 재귀적으로 Occurs를 확인합니다. (OR 논리)
+- T가 타입 변수 Y인 경우:
+  - Y의 대표 원소 Y'를 Find로 찾습니다.
+  - M[Y']가 정의되어 있으면 그 타입에 대해 재귀적으로 확인합니다.
+  - 그렇지 않으면 Y'과 X가 같은지 확인합니다.
 
-### 수식/기호/코드 설명
-```
-OccursCheck 의사코드:
+**배경 지식** (학부 2학년 수준)
 
-OccursCheck(X, τ) {
-  if (τ is a type variable Y) {
-    Y' = find(Y);
-    if (X == Y') {
-      return error("Occurs check failed");
-    }
-  } else if (τ = &τ') {
-    OccursCheck(X, τ');
-  } else if (τ = (τ₁,...,τₙ)) {
-    for i = 1 to n:
-      OccursCheck(X, τᵢ);
-  }
-  // 기본 타입은 항상 통과
-}
-```
+Occurs 체크는 unification에서 중요한 부분입니다. 이 체크가 없으면 `X = fn(i32) → X` 같은 무한 타입(infinite type)이 허용되어 타입 시스템이 깨집니다.
 
-**실행 예시:**
-```
-Unify(X, &X)에서:
-- X를 &X로 매핑하려고 함
-- OccursCheck(X, &X) 호출
-- &X의 내부 타입인 X에 대해 OccursCheck(X, X) 호출
-- X == find(X)이므로 실패
-- 에러 발생: "Occurs check failed"
-```
+**수식/기호/코드 설명**
 
-**프로그래밍 예시:**
-```
-fn(x) { &x }
-```
-이 함수를 자기 자신에게 적용하려고 하면:
-```
-fn(f) { f(f) }
-```
-타입을 부여하려고 할 때:
-- f의 타입: X
-- f(f)이려면 X ≡ X → Y 형태여야 함 (X가 X를 받아서 Y를 반환)
-- Unify(X, X → Y)는:
-  - X → Y의 내부에 X가 나타나므로 발생 검사 실패
-  - 에러: 타입 불일치
+- ∨: 논리 OR 연산
+- M[Y']: Y'에 할당된 타입
 
-### 전체적인 맥락
-발생 검사는 안전하고 종료 가능한 타입 추론을 보장합니다. 발생 검사 없이는 타입 해결 알고리즘이 무한 루프에 빠질 수 있고, 무의미한 무한 타입이 생성될 수 있습니다. 따라서 모든 현대 타입 체커와 타입 추론 엔진에서는 발생 검사를 필수적으로 포함합니다.
+**전체적인 맥락**
+
+Occurs 체크는 Unify 함수 내에서 타입 변수를 구체적인 타입에 할당하기 전에 호출됩니다. 이를 통해 타입 시스템의 건전성(soundness)을 보장합니다.
+
+**추가 설명** (선택)
+
+어떤 언어(예: Prolog)에서는 효율성을 위해 occurs 체크를 생략하기도 합니다. 그러나 타입 추론에서는 정확성이 중요하므로 대부분 포함합니다.
 
 ---
 
-## 슬라이드 11-12: DeepResolve - 깊은 해결
+## 슬라이드 6: Solving Constraints — Unify Algorithm (Part 2)
 
-### 개념 설명
-Unify 알고리즘이 모든 제약을 처리한 후, 타입 변수들의 최종 상태는 다음과 같을 수 있습니다:
-- 어떤 변수는 구체적인 타입으로 완전히 매핑됨
-- 어떤 변수는 다른 변수로 매핑됨
-- 어떤 변수는 여전히 매핑되지 않음
+### 원문 내용
+> **Solving Constraints — Unify Algorithm (Part 2)**
+>
+> Continuing Unify:
+> ```
+> if ...(previous cases) :
+> else if T₂' is a type variable :
+>     if Occurs(T₂', T₁') :
+>         unification fails
+>     else
+>         M[T₂'] ← T₁'
+> else if T₁' = C(T₁', ..., Tₙ') and T₂' = C(T₁'', ..., Tₙ') :
+>     for i in 1..n :
+>         Unify(Tᵢ', Tᵢ'')
+> else
+>     unification fails
+> ```
 
-DeepResolve는 이 모든 상황을 정리하여, 프로그램의 각 식에 대해 "최종적으로 이 식의 타입은 무엇인가?"를 명확히 합니다.
+### 해설
 
-**DeepResolve의 과정:**
-1. 프로그램의 모든 타입 변수에 대해 Resolve를 호출합니다.
-2. 매핑 체인을 따라가며 최종 타입에 도달합니다.
-3. 해결할 수 없는 타입 변수가 남으면 "모호한 타입" 에러를 보고합니다.
+**개념 설명**
 
-### 배경 지식
-- **타입 완성(Type Completion)**: 프로그램의 모든 부분에 구체적인 타입을 할당하는 과정입니다.
-- **모호성(Ambiguity)**: 제약만으로는 유일하게 결정되지 않는 타입을 말합니다. 예를 들어, 아무 제약도 없는 타입 변수는 어떤 타입이 될 수 있으므로 모호합니다.
+Unify 알고리즘의 Part 2는 Part 1의 나머지 경우들을 다룹니다.
 
-### 수식/기호/코드 설명
-```
-DeepResolve 의사코드:
+경우들:
+1. T₂'이 타입 변수이고 T₁'이 아닌 경우: Part 1의 대칭 경우입니다. Occurs 체크 후 M[T₂'] ← T₁'로 할당합니다.
 
-DeepResolve() {
-  for each type variable X in program:
-    finalType = Resolve(X);
-    if (finalType is still a type variable) {
-      report error("Ambiguous type for expression: type variable " +
-                   X + " is not determined");
-    } else {
-      assign(X, finalType);  // 최종 타입 할당
-    }
-}
-```
+2. 둘 다 같은 구조의 구체적인 타입인 경우: 예를 들어 둘 다 `C(...)` 형태라면, 각 인자에 대해 재귀적으로 Unify를 호출합니다. 예: `fn(int) → bool`과 `fn(X) → Y`를 Unify하면 `Unify(int, X)`와 `Unify(bool, Y)`를 호출합니다.
 
-**실행 예시:**
+3. 그 외의 경우: 예를 들어 `int`와 `bool`, 또는 다른 구조의 함수 타입끼리는 unify될 수 없으므로 실패합니다.
 
-프로그램: `let f = fn(x) { x };`
+**배경 지식** (학부 2학년 수준)
 
-제약 수집:
-- f의 타입: X
-- x의 타입: Y
-- f의 본체 x의 타입: Y
-- 반환 타입: Y
-- 함수 타입: Y → Y
+함수형 언어나 타입 추론 시스템에서 자주 사용되는 표준적인 unification 알고리즘입니다.
 
-결과: X ≡ Y → Y, 하지만 Y에 대한 제약이 없음
+**수식/기호/코드 설명**
 
-DeepResolve 실행:
-- Resolve(X) = Y → Y
-- Resolve(Y) = Y (제약이 없으므로 매핑 불가)
-- 결과: Y가 결정되지 않음
-- 에러: "Ambiguous type for Y"
+- C(T₁', ..., Tₙ'): 생성자 C를 가진 구체적인 타입
+- for i in 1..n: 각 인자에 대해 반복적으로 unify
 
-**바뀐 프로그램:** `let f = fn(x) { x }; f(1);`
+**전체적인 맥락**
 
-추가 제약:
-- f(1)에서 f의 인수 타입과 1의 타입을 unify
-- Unify(Y, int) → M[Y] = int
-
-DeepResolve 실행:
-- Resolve(X) = int → int
-- Resolve(Y) = int
-- 성공: 모든 타입이 구체적으로 결정됨
-
-### 전체적인 맥락
-DeepResolve는 제약 해결 후 최종적으로 "이 프로그램에서 각 표현식의 타입이 정말로 결정되었는가?"를 확인하는 단계입니다. 이 단계에서 모호한 타입이 발견되면 컴파일러는 프로그래머에게 명시적 타입 주석을 요구할 수 있습니다.
+Unify는 등식 제약을 해결하는 메인 알고리즘입니다. Part 1과 Part 2를 합쳐 모든 가능한 경우를 커버합니다.
 
 ---
 
-## 슬라이드 13-14: 완전한 예시 - 제약 해결 워크스루
+## 슬라이드 7: Solving Constraints — Obtaining the Solution
 
-### 개념 설명
-이 슬라이드는 다음 프로그램에 대한 전체 제약 해결 과정을 단계별로 보여줍니다:
+### 원문 내용
+> **Solving Constraints — Obtaining the Solution**
+>
+> Once Unify is called for each constraint, calling DeepResolve on each type variable gives the solution
+>
+> DeepResolve(T):
+> ```
+> if T is a proper type C(T₁, ..., Tₙ) :
+>     return C(DeepResolve(T₁), ..., DeepResolve(Tₙ))
+> if T is a type variable X :
+>     X' ← Find(X)
+>     if M[X'] is defined :
+>         return DeepResolve(M[X'])
+>     else
+>         return X'
+> ```
 
-```
-let f = fn(x) { x + 1 };
-f(2)
-```
+### 해설
 
-이것은 지금까지 배운 모든 기법(제약 수집, Unify, Resolve, DeepResolve)이 어떻게 함께 작동하는지를 구체적으로 보여주는 예시입니다.
+**개념 설명**
 
-### 배경 지식
-- **함수 정의**: `fn(x) { x + 1 }`은 정수를 받아서 정수를 반환하는 함수입니다.
-- **함수 호출**: `f(2)`는 함수 f를 정수 2의 인수로 호출합니다.
-- **산술 연산**: `x + 1`은 x와 1이 모두 정수여야 한다는 제약을 생성합니다.
+DeepResolve는 Resolve와 유사하지만, 구체적인 타입 내의 모든 부분 타입도 재귀적으로 해결합니다.
 
-### 수식/기호/코드 설명
-```
-1단계: 타입 변수 할당
-  - let f: τf
-  - fn(x): τf_fn
-  - x: τx
-  - x + 1: τadd
-  - 1: int (상수)
-  - f(2): τcall
-  - 2: int (상수)
+동작 과정:
+- T가 구체적인 타입 C(T₁, ..., Tₙ)인 경우: 각 인자 T₁, ..., Tₙ에 대해 DeepResolve를 재귀적으로 호출합니다.
+- T가 타입 변수 X인 경우:
+  - Find(X)로 대표 원소 X'를 찾습니다.
+  - M[X']가 정의되어 있으면 그 타입에 대해 재귀적으로 DeepResolve를 호출합니다.
+  - 그렇지 않으면 X'를 반환합니다.
 
-2단계: 제약 수집
-  C1: τf = τf_fn                    (let f의 정의)
-  C2: τf_fn = τx → τadd            (함수 타입: 인수 τx → 결과 τadd)
-  C3: Unify(τx, int)               (x + 1에서 x와 1의 덧셈 → x는 int)
-  C4: Unify(τadd, int)             (x + 1 → 1이 int이므로 결과도 int)
-  C5: Unify(τcall, τadd)           (함수 호출의 반환 타입)
-  C6: Unify(τf, int → τcall)       (f(2)에서 f는 int를 받는 함수)
+**배경 지식** (학부 2학년 수준)
 
-3단계: 제약 해결 (Unify 실행)
-  - C3: Unify(τx, int) → M[τx] = int
-  - C4: Unify(τadd, int) → M[τadd] = int
-  - C2: Unify(τf_fn, int → int)
-    → M[τf_fn] = int → int
-  - C1: τf와 τf_fn을 union
-  - C5: Unify(τcall, int) → M[τcall] = int
-  - C6: Unify(τf, int → int) 확인 (이미 일치함)
+Resolve는 한 단계만 해결하지만(shallow), DeepResolve는 모든 중첩 타입 변수까지 완전히 해결합니다(deep).
 
-4단계: DeepResolve
-  - Resolve(τf) = int → int
-  - Resolve(τx) = int
-  - Resolve(τadd) = int
-  - Resolve(τcall) = int
+**수식/기호/코드 설명**
 
-최종 결과:
-  - f: int → int
-  - x: int
-  - f(2): int
-  - 프로그램 타입: 정상, 에러 없음
-```
+- C(DeepResolve(T₁), ..., DeepResolve(Tₙ)): 구조를 유지하면서 모든 부분 타입을 재귀적으로 해결
 
-### 전체적인 맥락
-이 예시는 학생들이 지금까지 배운 개념들을 종합적으로 이해하도록 돕습니다. 실제 프로그램에서 타입 추론이 어떤 일련의 단계를 거쳐 작동하는지를 명확히 보여주며, 특히 제약 수집과 제약 해결 사이의 관계를 구체화합니다.
+**전체적인 맥락**
+
+타입 추론의 마지막 단계입니다. 모든 Unify 호출이 완료된 후, 각 타입 변수에 대해 DeepResolve를 호출하면 최종적인 구체적인 타입(또는 타입 변수)을 얻을 수 있습니다.
+
+**추가 설명** (선택)
+
+예를 들어, M[X] = Y이고 M[Y] = int인 경우:
+- Resolve(X)는 Y를 반환합니다.
+- DeepResolve(X)는 int를 반환합니다.
 
 ---
 
-## 슬라이드 15-16: 튜플 타입 제약 - 첫 번째 시도
+## 슬라이드 8: Solving Constraints — Implementation
 
-### 개념 설명
-튜플은 고정된 크기의 이질적(heterogeneous) 컬렉션으로, 각 원소는 독립적인 타입을 가질 수 있습니다. 예: `(1, true, "hello")`는 (int, bool, string) 타입입니다.
+### 원문 내용
+> **Solving Constraints — Implementation**
+>
+> - Each constraint is processed only once
+> - For implementation, we can interleave the collection and solving phases, solving the constraints on-the-fly, as they are being generated
 
-**순진한 접근법:**
-```
-⟦(e1,...,en)⟧ = (⟦e1⟧,...,⟦en⟧)
-⟦e.i⟧ = ?  (튜플의 i번째 원소 접근)
-```
+### 해설
 
-이 접근법에서는 `e.i`가 타입이 일치하는 튜플이어야 한다고 가정합니다.
+**개념 설명**
 
-### 배경 지식
-- **튜플(Tuple)**: 여러 값을 하나의 합성 타입으로 묶는 데이터 구조입니다. Rust, Python, Go 등 많은 언어에서 지원합니다.
-- **원소 접근(Element Access)**: 튜플의 i번째 원소에 접근하는 것을 `e.i` 또는 `e[i]` 형태로 표기합니다.
+실제 구현에서의 효율성과 유연성에 관한 설명입니다.
 
-### 수식/기호/코드 설명
-```
-순진한 타입 규칙:
+두 가지 중요한 사항:
+1. **각 제약은 한 번만 처리됩니다**: 같은 제약이 여러 번 생성되지 않도록 주의하거나, 생성되더라도 한 번만 처리하도록 합니다.
 
-1. 튜플 생성:
-   ⟦(e1,...,en)⟧ = (⟦e1⟧,...,⟦en⟧)
+2. **온더플라이(on-the-fly) 해결**: 전통적으로는 먼저 모든 제약을 수집한 후 풀지만, 실제 구현에서는 제약이 생성되는 즉시 Unify를 호출할 수 있습니다. 이는:
+   - 메모리 사용을 줄일 수 있습니다.
+   - 조기에 에러를 감지할 수 있습니다.
+   - 성능이 더 좋을 수 있습니다.
 
-   제약: 각 ei에 대해 그 타입 제약 추가
+**배경 지식** (학부 2학년 수준)
 
-2. 튜플 원소 접근:
-   e: (τ1,...,τn)이면
-   ⟦e.i⟧ = τi
+이는 컴파일러 설계에서 자주 사용되는 최적화 기법입니다. 컴파일 시간과 메모리를 절약할 수 있습니다.
 
-   제약: Unify(⟦e⟧, (τ1,...,τn))
-         (⟦e⟧이 튜플과 같아야 함)
-```
+**전체적인 맥락**
 
-**문제점:**
-```
-프로그램: let x = (1, 2); x.0
-
-1단계: 제약 수집
-  - (1,2): τt = (int, int)
-  - x: τx
-  - x.0: τaccess
-
-2단계: 제약
-  - Unify(τx, τt)
-  - Unify(τaccess, τt.0) = Unify(τaccess, int)
-
-하지만 다음 프로그램은 어떻게 되는가?
-
-프로그램: let x = (1, 2); x.0
-
-1단계: 제약 수집
-  - τt = (int, int)
-  - x: τx (이미 τt와 unified)
-  - x.0: τaccess
-
-2단계: 제약
-  - Unify(τx, (int, int)) ✓
-  - Unify(τx, (τ1, τ2)) → Unify((int, int), (τ1, τ2))
-  → τ1 = int, τ2 = int
-  - Unify(τaccess, τ1) = Unify(τaccess, int) ✓
-
-하지만 다음의 경우:
-
-프로그램: let x = (1, 2); x.3
-(인덱스 범위 초과)
-
-제약:
-  - Unify(τx, (int, int))
-  - x.3을 접근하려면?
-  - 순진한 규칙: (int, int)의 3번 원소 → 없음!
-  - 에러를 감지할 수 없음
-```
-
-### 전체적인 맥락
-이 슬라이드는 문제를 제시합니다: 튜플 타입 규칙이 너무 단순해서 범위를 벗어난 원소 접근을 감지할 수 없습니다. 특히 제약 기반 분석의 문제는, 제약을 수집할 때 접근하는 인덱스가 실제로 유효한지 미리 알 수 없다는 것입니다.
+이제 일반적인 제약 해결 메커니즘을 완료했습니다. 다음부터는 특정 언어 기능(튜플 타입)을 지원하기 위해 제약과 알고리즘을 확장하는 방법을 배웁니다.
 
 ---
 
-## 슬라이드 17: 튜플 제약 - 패딩을 사용한 두 번째 시도
+## 슬라이드 9: Tuple Types
 
-### 개념 설명
-첫 번째 시도의 문제를 해결하기 위해, 모든 튜플을 같은 길이로 맞추는 방법을 제안합니다.
+### 원문 내용
+> **Tuple Types**
+>
+> Expression e ::= ... | (e, ..., e) | e.i
+> Type T ::= ... | (T, ..., T)
+>
+> We want to extend the type analysis to support tuple types
+> - Projection on non-tuple types should be rejected
+> - Projection on non-existent elements of tuples should be rejected
 
-**아이디어:** 모든 튜플을 같은 최대 길이로 패딩(padding)합니다. 부족한 원소는 "미정의" 타입으로 채웁니다.
+### 해설
 
-**예시:**
-```
-(1, 2) → (int, int, ?, ?, ?, ...)
-(1, 2, 3) → (int, int, int, ?, ?, ...)
-(true) → (bool, ?, ?, ?, ...)
-```
+**개념 설명**
 
-### 배경 지식
-- **패딩(Padding)**: 자료 구조를 고정 크기로 만들기 위해 빈 공간을 채우는 기법입니다.
-- **신발끈 기법(Bootstrapping)**: 제약 기반 분석에서 크기를 미리 결정하기 위해 사용되는 기법입니다.
+이제 프로그래밍 언어에 튜플 타입을 추가합니다.
 
-### 수식/기호/코드 설명
-```
-패딩 규칙:
-최대 튜플 길이를 MAX_TUPLE_LEN이라 하면,
+문법:
+- 튜플 표현식: `(e₁, e₂, ..., eₙ)` - 여러 값을 하나의 튜플로 묶음
+- 튜플 투영(projection): `e.i` - 튜플의 i번째 원소에 접근
+- 튜플 타입: `(T₁, T₂, ..., Tₙ)` - 각 원소의 타입을 명시
 
-⟦(e1,...,en)⟧ = (⟦e1⟧,...,⟦en⟧, ?, ?, ..., ?)
-                 (n개)           (MAX_TUPLE_LEN - n개)
+목표:
+1. 비튜플 타입에 대한 투영을 거부해야 합니다. 예: `(int).0` 또는 `int.0`
+2. 존재하지 않는 원소에 대한 투영을 거부해야 합니다. 예: `(int, bool).2`
 
-여기서 ?는 "미정의" 플레이스홀더입니다.
-```
+**배경 지식** (학부 2학년 수준)
 
-**문제점:**
-```
-프로그램: (1, 2, 3).5
+튜플은 구조체(struct)와 유사한 복합 데이터 타입입니다. 여러 타입의 값을 함께 저장할 수 있습니다.
 
-패딩 후:
-(int, int, int, ?, ?, ...)
+**전체적인 맥락**
 
-.5로 접근:
-- 5번째 원소는 ?
-- 하지만 ?는 어떤 타입이든 될 수 있으므로,
-  에러를 감지할 수 없음!
-
-패딩된 튜플에서 .5 접근은:
-- ⟦(1,2,3).5⟧는 5번째 원소의 타입, 즉 ?
-- 하지만 ?는 아직 결정되지 않은 타입 변수
-- (1,2,3)은 사실 3개 원소만 있으므로 .5는 에러여야 하는데,
-  분석이 이를 감지하지 못함
-```
-
-### 전체적인 맥락
-패딩 방법은 모든 튜플을 같은 구조로 만들기 위한 아이디어이지만, 여전히 범위 초과 접근을 감지할 수 없다는 문제가 있습니다. 더 나은 방법이 필요합니다.
+지금까지는 단순한 타입(정수, 함수 타입 등)만 다뤘습니다. 이제 더 복잡한 구조를 지원하기 위해 제약 생성 및 해결 메커니즘을 확장해야 합니다.
 
 ---
 
-## 슬라이드 18-19: 튜플 제약 - ◇를 사용한 올바른 방법
+## 슬라이드 10: Tuple Type Constraints (First Attempt)
 
-### 개념 설명
-이전 접근법의 문제를 해결하기 위해, "빠진 원소(absent element)"를 나타내는 특수 타입 `◇`를 도입합니다.
+### 원문 내용
+> **Tuple Type Constraints (First Attempt)**
+>
+> - (e₁, ..., eₙ): [(e₁, ..., eₙ)] = ([e₁], ..., [eₙ])
+> - e.i: [e] = (λ₀, ..., λᵢ₋₁, [e.i], λᵢ₊₁, ..., λₙ)
+>   - where λ₀, ..., λᵢ₋₁ are fresh type variables
 
-**핵심 아이디어:**
-1. 모든 튜플을 같은 길이로 패딩합니다.
-2. 실제로 없는 원소 위치에는 `◇` 타입을 사용합니다.
-3. 원소 접근 시에는 결과 타입이 `◇`이 아니어야 한다는 부등식 제약을 추가합니다.
+### 해설
 
-### 배경 지식
-- **특수 타입**: 프로그래밍 언어의 타입 시스템에서 특정 목적을 위해 도입된 특수한 타입입니다. 예를 들어 Python의 `None` 타입, Rust의 `Never` 타입 등이 있습니다.
-- **부등식 제약(Disequality Constraint)**: τ₁ ≠ τ₂라는 형태의 제약으로, 두 타입이 달라야 함을 명시합니다.
+**개념 설명**
 
-### 수식/기호/코드 설명
-```
-◇를 사용한 규칙:
+튜플 타입을 지원하기 위한 첫 번째 시도로서 타입 제약을 생성하는 규칙입니다.
 
-1. 튜플 타입 정의:
-   ⟦(e1,...,en)⟧ = (⟦e1⟧,...,⟦en⟧, ◇, ◇, ..., ◇)
-   (n개 원소)      (MAX_TUPLE_LEN - n개)
+규칙 분석:
 
-2. 원소 접근:
-   e.i의 타입을 τresult라 하면,
+1. **튜플 생성**: `(e₁, ..., eₙ)` 표현식
+   - 전체 튜플의 타입 `[e₁, ..., eₙ]`은 각 원소의 타입들의 튜플 `([e₁], ..., [eₙ])`과 같아야 합니다.
+   - 예: `(1, true)`의 타입은 `(int, bool)`이어야 합니다.
 
-   제약 1: Unify(⟦e⟧, (τ1,...,τMAX))
-   (e가 최대 길이의 튜플과 같아야 함)
+2. **튜플 투영**: `e.i` 표현식 (i번째 원소 접근)
+   - `[e]` (e의 타입)는 정확히 n개의 원소를 가진 튜플이어야 합니다.
+   - i번째 원소의 타입은 `[e.i]`와 같아야 합니다.
+   - i-1개의 "이전" 위치는 λ₀, ..., λᵢ₋₁로 채워집니다 (이들은 아직 무엇인지 모르는 fresh type variables).
+   - i-1개의 "이후" 위치는 λᵢ₊₁, ..., λₙ으로 채워집니다.
 
-   제약 2: τresult ≠ ◇
-   (접근 결과가 ◇이 아니어야 함)
-```
+**배경 지식** (학부 2학년 수준)
 
-**실행 예시:**
-```
-프로그램: (1, 2, 3).5
+Fresh type variable은 제약 생성 과정에서 새로 도입되는 타입 변수입니다. 각 fresh variable은 고유(unique)합니다.
 
-MAX_TUPLE_LEN = 6이라 가정하면,
+**수식/기호/코드 설명**
 
-1단계: 제약 수집
-  - (1, 2, 3): τt = (int, int, int, ◇, ◇, ◇)
-  - (1, 2, 3).5: τresult
+- [e]: 표현식 e의 타입 (이전 강의에서의 표기)
+- λ: 임의의 타입을 대표하는 fresh type variable
+- 첨수: 튜플 투영의 인덱스 (1부터 시작하거나 0부터 시작할 수 있음)
 
-2단계: 제약
-  - Unify(τt, (τ1,...,τ6))
-  → τ1=int, τ2=int, τ3=int, τ4=◇, τ5=◇, τ6=◇
-  - τresult ≠ ◇ (원소 접근 결과는 ◇이 아니어야 함)
+**전체적인 맥락**
 
-3단계: 해석
-  - (1, 2, 3).5는 5번째 원소에 접근
-  - 해당 위치는 ◇
-  - 하지만 τresult = ◇이면 제약 "τresult ≠ ◇" 위반
-  - 에러 감지!
-```
-
-**또 다른 예시:**
-```
-프로그램: (1, 2, 3).2
-
-1단계: 제약
-  - (1, 2, 3): (int, int, int, ◇, ◇, ◇)
-  - (1, 2, 3).2: τresult
-
-2단계: 해석
-  - (1, 2, 3).2는 2번째 원소에 접근 (0-indexed라면)
-  - 해당 위치는 int
-  - τresult = int
-  - 제약 "τresult ≠ ◇" 만족
-  - 성공
-```
-
-### 전체적인 맥락
-◇를 도입함으로써, 범위 초과 접근을 타입 시스템의 일부로 모델링할 수 있게 됩니다. 이는 타입 분석으로 배열/튜플 바운드 체크 에러를 감지할 수 있음을 보여줍니다. 그러나 이 방법도 한계가 있습니다 (슬라이드 20 참고).
+이 규칙은 직관적이지만, 다음 슬라이드의 예제에서 문제가 발생합니다.
 
 ---
 
-## 슬라이드 20: 제약의 한계 - 흐름 무감각성 (Flow-Insensitivity)
+## 슬라이드 11: Tuple Type Constraints (First Attempt) — Example
 
-### 개념 설명
-지금까지 배운 제약 기반 타입 분석은 **흐름 무감각(flow-insensitive)** 분석입니다. 즉, 프로그램의 제어 흐름 순서를 무시하고 모든 제약을 동시에 고려합니다.
+### 원문 내용
+> **Tuple Type Constraints (First Attempt) — Example**
+>
+> ```
+> fn f() {
+>   let x = (1, true);
+>   x.0
+> }
+> ```
+>
+> Constraints:
+> - fn f(){...}: [f] = fn() → [x.0]
+> - let x = (1, true): [x] = ([1], [true])
+> - 1: [1] = i32
+> - true: [true] = bool
+> - x.0: [x] = ([x.0], λ)
+>
+> No solution exists because [x] cannot be both ([x.0]) and (i32, bool).
 
-**문제:**
-```
-let mut x = 1;
-x = true;
-x + 1
-```
+### 해설
 
-이 프로그램은 타입 에러를 포함합니다 (x에 true를 할당한 후 정수로 덧셈할 수 없음). 하지만 흐름 무감각 분석에서는:
+**개념 설명**
 
-1. x: τx
-2. x = 1 → Unify(τx, int)
-3. x = true → Unify(τx, bool)
-4. x + 1 → x가 int와 bool 모두여야 함
+이 예제는 첫 번째 시도 규칙의 문제점을 보여줍니다.
 
-Unify(τx, int)와 Unify(τx, bool)는 모순이므로, 제약 해결 시 충돌이 발생하고 타입 에러를 보고합니다.
+코드 분석:
+- 함수 f는 튜플 `(1, true)`를 변수 x에 할당합니다.
+- 함수는 `x.0` (튜플의 첫 번째 원소)을 반환합니다.
 
-### 배경 지식
-- **흐름 감각성(Flow-Sensitivity)**: 프로그램의 실행 순서를 고려하는 분석입니다. 변수의 타입이 코드의 위치에 따라 달라질 수 있습니다.
-- **흐름 무감각성(Flow-Insensitivity)**: 제어 흐름을 무시하고 전체 프로그램을 하나의 제약 집합으로 취급합니다.
-- **데이터 흐름 분석(Data Flow Analysis)**: 프로그램의 값이 어떻게 전파되는지를 추적하는 기법입니다.
+생성된 제약들:
+1. `[f] = fn() → [x.0]`: 함수 f의 타입
+2. `[x] = ([1], [true])`: x의 타입은 (i32, bool) 형태의 튜플
+3. `[1] = i32`: 리터럴 1의 타입
+4. `[true] = bool`: 리터럴 true의 타입
+5. `[x] = ([x.0], λ)`: x.0 투영에서 생성된 제약 - [x]는 정확히 2개 원소의 튜플이고, 첫 번째 원소가 [x.0]
 
-### 수식/기호/코드 설명
-```
-흐름 무감각 분석의 문제:
+**문제점**
 
-프로그램:
-  let mut x = 1;      // 라인 1
-  x = true;           // 라인 2
-  x + 1               // 라인 3
+제약 2와 5가 모순입니다:
+- 제약 2: `[x] = (i32, bool)`
+- 제약 5: `[x] = ([x.0], λ)`
 
-제약 수집 (순서 무시):
-  C1: Unify(τx, int)    (라인 1에서)
-  C2: Unify(τx, bool)   (라인 2에서)
-  C3: Unify(τx, int)    (라인 3에서, x + 1)
+Unify 결과:
+- `([x.0], λ) = (i32, bool)`이어야 하므로
+- `[x.0] = i32`이고 `λ = bool`이어야 합니다.
 
-Unify 실행:
-  - C1: M[τx] = int
-  - C2: Unify(τx, bool)
-    → Resolve(τx) = int (이전 매핑)
-    → Unify(int, bool) → 에러!
+하지만 제약 2는 `[x] = ([1], [true])`이므로, 결국 제약이 만족될 수 없습니다.
 
-흐름 감각 분석이라면:
-  - 라인 1: x: int
-  - 라인 2: x: bool (할당으로 인해 타입 변경)
-  - 라인 3: x는 bool인데 + 1 → 에러 (정당한 에러)
+실제로는 `[x] = (i32, bool)`이고 `[x.0] = i32`이어야 하므로, 두 번째 규칙이 잘못되었습니다.
 
-두 분석 모두 에러를 보고하지만, 이유가 다릅니다:
-  - 흐름 무감각: "x가 int와 bool 모두 될 수 없다"
-  - 흐름 감각: "x가 현재 bool이므로 정수 덧셈 불가"
-```
+**전체적인 맥락**
 
-**흐름 무감각 분석이 문제가 되는 경우:**
-```
-프로그램:
-  let x = 1;
-  if (condition) {
-    x = true;
-  }
-  x + 1
-
-이 경우:
-  - 조건이 참이면: x는 bool → 에러
-  - 조건이 거짓이면: x는 int → 성공
-
-흐름 무감각 분석:
-  - C1: Unify(τx, int)
-  - C2: Unify(τx, bool)    (if 블록 내)
-  - C3: Unify(τx, int)     (x + 1)
-
-  → Unify(int, bool) 시도 → 에러 (거짓 양성!)
-
-실제로는:
-  - 조건이 거짓인 경우 x는 항상 int
-  - 따라서 x + 1은 성공할 수 있음
-  - 하지만 분석은 "항상 에러"라고 보고
-```
-
-### 전체적인 맥락
-흐름 무감각성은 제약 기반 타입 분석의 근본적인 한계입니다. 이를 극복하려면 흐름 감각 분석으로 전환해야 하는데, 그러면 제약 기반 분석의 단순함과 효율성을 잃게 됩니다. 이것은 정적 분석에서 항상 마주치는 트레이드오프: 정확성 vs 계산 비용입니다.
+첫 번째 시도는 튜플의 길이를 정확히 지정하지 못합니다. 투영에서 몇 개의 원소가 있는지 미리 알 수 없으므로, 이를 처리하기 위해 다른 접근이 필요합니다.
 
 ---
 
-## 슬라이드 21: Let-다형성의 한계 (Let-Polymorphism Limitations)
+## 슬라이드 12: Tuple Type Constraints (Second Attempt)
 
-### 개념 설명
-Let-다형성(Let-polymorphism)은 `let` 바인딩을 통해 도입된 함수나 값에 대해 다형적 타입을 허용하는 기법입니다. 하지만 이것도 한계가 있습니다.
+### 원문 내용
+> **Tuple Type Constraints (Second Attempt)**
+>
+> Let N be the largest tuple length or projection index in the program
+>
+> - (e₁, ..., eₙ): [(e₁, ..., eₙ)] = ([e₁], ..., [eₙ], λₙ₊₁, ..., λₙ)
+> - e.i: [e] = (λ₀, ..., λᵢ₋₁, [e.i], λᵢ₊₁, ..., λₙ₋₁)
 
-**Let-다형성의 원리:**
-```
-let f = e1 in e2
-```
-에서 f를 `let` 바인딩으로 정의하면, e2의 여러 위치에서 f를 다른 타입으로 사용할 수 있습니다.
+### 해설
 
-**하지만 함수 매개변수에는 적용되지 않습니다:**
+**개념 설명**
+
+두 번째 시도는 고정된 크기의 튜플을 사용합니다.
+
+핵심 아이디어: 프로그램의 모든 투영 인덱스와 튜플 길이 중 최댓값 N을 찾고, 모든 튜플을 정확히 N개의 원소를 가진 것으로 취급합니다.
+
+규칙 수정:
+
+1. **튜플 생성**: `(e₁, ..., eₙ)` (n < N인 경우)
+   - 튜플 타입은 N개 원소를 가지며, 처음 n개는 각 표현식의 타입, 나머지는 fresh variables입니다.
+   - `[x] = ([e₁], ..., [eₙ], λₙ₊₁, ..., λₙ)`
+
+2. **튜플 투영**: `e.i`
+   - `[e]`는 N개 원소의 튜플이어야 합니다.
+   - i번째 원소의 타입이 `[e.i]`입니다.
+
+**배경 지식** (학부 2학년 수준)
+
+이는 static 분석에서 자주 사용하는 기법입니다. 동적 크기를 고정된 크기로 "정규화(normalization)"하면 분석이 단순해집니다.
+
+**전체적인 맥락**
+
+고정 크기 접근으로 문제를 해결하지만, 여전히 문제가 있을 수 있습니다. 다음 예제를 보겠습니다.
+
+---
+
+## 슬라이드 13: Tuple Type Constraints (Second Attempt) — Example
+
+### 원문 내용
+> **Tuple Type Constraints (Second Attempt) — Example**
+>
+> ```
+> fn f() {
+>   let x = (1, true);
+>   x.2
+> }
+> ```
+>
+> Constraints:
+> - fn f(){...}: [f] = fn() → [x.2]
+> - let x = (1, true): [x] = ([1], [true], λ₃)
+> - 1: [1] = i32
+> - true: [true] = bool
+> - x.2: [x] = (λ₀, λ₁, [x.2])
+>
+> Solution: [x] = (i32, bool, λ₃), [f] = fn() → λ₃
+
+### 해설
+
+**개념 설명**
+
+이 예제는 N = 3인 경우입니다(최대 투영 인덱스가 2, 즉 세 번째 원소).
+
+코드 분석:
+- 함수 f는 튜플 `(1, true)` (2개 원소)를 생성합니다.
+- 함수는 `x.2` (세 번째 원소)를 반환합니다.
+
+생성된 제약들:
+1. `[f] = fn() → [x.2]`
+2. `[x] = (i32, bool, λ₃)`: 2개 원소로 생성했으므로 3번째는 fresh variable
+3. `[1] = i32`
+4. `[true] = bool`
+5. `[x] = (λ₀, λ₁, [x.2])`: 투영 제약
+
+해결:
+- 제약 2와 5를 Unify하면:
+  - `i32 = λ₀`
+  - `bool = λ₁`
+  - `λ₃ = [x.2]`
+- 따라서 `[x.2]` 타입은 `λ₃` (여전히 미결정)입니다.
+- 최종: `[f] = fn() → λ₃`
+
+**배경 지식** (학부 2학년 수준)
+
+이는 유효한 해이지만, 여전히 세 번째 원소의 타입을 추론하지 못했습니다. 즉, 범위를 벗어난 투영을 감지하지 못합니다.
+
+**전체적인 맥락**
+
+고정 크기 접근도 완벽하지 않습니다. 다음 슬라이드에서 더 나은 해결책을 제시합니다.
+
+---
+
+## 슬라이드 14: Tuple Type Constraints (Correct)
+
+### 원문 내용
+> **Tuple Type Constraints (Correct)**
+>
+> Add a type to represent an absent element of a tuple
+>
+> T ::= ... | ⋄
+>
+> - (e₁, ..., eₙ): [(e₁, ..., eₙ)] = ([e₁], ..., [eₙ], ⋄, ..., ⋄)
+> - e.i: [e] = (λ₀, ..., λᵢ₋₁, [e.i], λᵢ₊₁, ..., λₙ₋₁) ∧ [e.i] ≠ ⋄
+
+### 해설
+
+**개념 설명**
+
+올바른 해결책은 absent(부재) 타입 ⋄ (바닥/bottom 기호)를 도입합니다.
+
+핵심 아이디어:
+- ⋄는 존재하지 않는 원소를 나타내는 특수한 타입입니다.
+- 튜플 생성 시, 지정된 원소들은 해당 표현식의 타입으로 채워지고, 나머지는 ⋄로 채웁니다.
+- 투영 시에는 접근하는 원소의 타입이 ⋄가 아니어야 한다는 부등식 제약이 추가됩니다.
+
+규칙:
+
+1. **튜플 생성**: `(e₁, ..., eₙ)` (n ≤ N)
+   - `[x] = ([e₁], ..., [eₙ], ⋄, ..., ⋄)`: n개 위치는 표현식 타입, 나머지는 ⋄
+
+2. **튜플 투영**: `e.i`
+   - 기존: `[e] = (λ₀, ..., λᵢ₋₁, [e.i], λᵢ₊₁, ..., λₙ₋₁)`
+   - 추가: `[e.i] ≠ ⋄` (부등식 제약)
+
+**배경 지식** (학부 2학년 수준)
+
+⋄는 타입 이론에서 "bottom" 또는 "impossible" 타입이라고 불립니다. 값이 존재할 수 없는 타입을 나타냅니다.
+
+**수식/기호/코드 설명**
+
+- ⋄: absent 원소를 나타내는 타입
+- [e.i] ≠ ⋄: 부등식 제약 (e.i 타입이 ⋄가 아니어야 함)
+
+**전체적인 맥락**
+
+이제 범위 밖의 투영을 올바르게 감지할 수 있습니다. 다음 예제들을 봅시다.
+
+---
+
+## 슬라이드 15: Tuple Type Constraints (Correct) — Example 1
+
+### 원문 내용
+> **Tuple Type Constraints (Correct) — Example 1**
+>
+> ```
+> fn f() {
+>   let x = (1, true);
+>   x.0
+> }
+> ```
+>
+> Constraints:
+> - fn f(){...}: [f] = fn() → [x.0]
+> - let x = (1, true): [x] = ([1], [true])
+> - 1: [1] = i32
+> - true: [true] = bool
+> - x.0: [x] = ([x.0], λ)
+>
+> Solution: [x] = (i32, bool), [f] = fn() → i32
+
+### 해설
+
+**개념 설명**
+
+이 예제는 유효한 투영입니다 (0번째 원소에 접근).
+
+코드 분석:
+- N = 1 (최대 투영 인덱스)
+- 튜플 `(1, true)` 생성: 2개 원소이므로 N보다 크지만, 표기는 간단하게 ([1], [true])로 표현
+
+생성된 제약들:
+1. `[f] = fn() → [x.0]`
+2. `[x] = ([1], [true])`: 기본 제약
+3-4. 리터럴 타입
+5. `[x] = ([x.0], λ)`: 투영 제약
+6. `[x.0] ≠ ⋄`: 부등식 제약
+
+해결:
+- `([1], [true])` = `([x.0], λ)`를 Unify하면:
+  - `[x.0] = [1] = i32`
+  - `λ = [true] = bool`
+- `[x.0] ≠ ⋄`는 `i32 ≠ ⋄`로 자동으로 만족됩니다.
+
+최종 해:
+- `[x] = (i32, bool)`
+- `[f] = fn() → i32`
+
+**배경 지식** (학부 2학년 수준)
+
+이 예제는 정상적인 범위 내의 투영이므로 문제없이 해결됩니다.
+
+**전체적인 맥락**
+
+정상 케이스입니다. 다음 예제는 범위를 벗어난 투영을 보여줍니다.
+
+---
+
+## 슬라이드 16: Tuple Type Constraints (Correct) — Example 2
+
+### 원문 내용
+> **Tuple Type Constraints (Correct) — Example 2**
+>
+> ```
+> fn f() {
+>   let x = (1, true);
+>   x.2
+> }
+> ```
+>
+> Constraints:
+> - fn f(){...}: [f] = fn() → [x.2]
+> - let x = (1, true): [x] = ([1], [true], ⋄)
+> - 1: [1] = i32
+> - true: [true] = bool
+> - x.2: [x] = (λ₁, λ₂, [x.2]) ∧ [x.2] ≠ ⋄
+>
+> No solution exists because [x.2] should not be ⋄.
+
+### 해설
+
+**개념 설명**
+
+이 예제는 범위를 벗어난 투영입니다 (튜플은 2개 원소인데 3번째 원소에 접근).
+
+코드 분석:
+- N = 2 (최대 투영 인덱스는 2)
+- 실제로는 인덱스가 0, 1, 2이므로 N = 3일 수도 있지만, 튜플 생성 시 2개만 지정했으므로 세 번째는 ⋄
+
+생성된 제약들:
+1. `[f] = fn() → [x.2]`
+2. `[x] = (i32, bool, ⋄)`: 튜플 생성에서 2개 지정, 나머지는 ⋄
+3-4. 리터럴 타입
+5. `[x] = (λ₁, λ₂, [x.2])`: 투영 제약
+6. `[x.2] ≠ ⋄`: 부등식 제약
+
+**문제점**
+
+제약 2와 5를 Unify하려면:
+- `i32 = λ₁`
+- `bool = λ₂`
+- `⋄ = [x.2]`
+
+그런데 제약 6은 `[x.2] ≠ ⋄`를 요구합니다.
+
+따라서 제약 6이 위반되므로 **해가 존재하지 않습니다**. 타입 분석기는 "not ok"를 반환합니다.
+
+**배경 지식** (학부 2학년 수준)
+
+부등식 제약(inequality constraint)을 확인하는 것이 핵심입니다. 앞의 슬라이드 17에서 구현을 다룹니다.
+
+**전체적인 맥락**
+
+이제 범위를 벗어난 투영을 올바르게 거부할 수 있습니다!
+
+---
+
+## 슬라이드 17: Tuple Type Constraints — Implementation
+
+### 원문 내용
+> **Tuple Type Constraints — Implementation**
+>
+> - Unify is for solving equalities
+> - We first apply Unify to solve all the equalities, and then check the inequalities
+> - If any inequality is violated, the analysis says "not ok"
+> - Otherwise, the analysis says "ok"
+
+### 해설
+
+**개념 설명**
+
+튜플 타입 제약을 구현하는 방식을 설명합니다.
+
+절차:
+1. **1단계**: 모든 등식 제약을 Unify로 해결합니다.
+2. **2단계**: 모든 부등식 제약을 확인합니다.
+   - 부등식 제약: `[e.i] ≠ ⋄`
+   - 1단계에서 얻은 타입 할당을 사용하여, `[e.i]`를 계산(DeepResolve)합니다.
+   - 만약 결과가 ⋄라면, 부등식이 위반되었으므로 "not ok"를 반환합니다.
+   - 모든 부등식이 만족되면 "ok"를 반환합니다.
+
+**배경 지식** (학부 2학년 수준)
+
+부등식 제약은 등식으로 변환하기 어렵기 때문에 별도로 처리합니다. 이를 두 단계로 나누는 것이 효율적입니다.
+
+**전체적인 맥락**
+
+이제 튜플 타입 지원이 완료되었습니다. 다음부터는 타입 분석의 한계와 문제점들을 다룹니다.
+
+---
+
+## 슬라이드 18: Limitations — Flow-Insensitivity
+
+### 원문 내용
+> **Limitations — Flow-Insensitivity**
+>
+> ```
+> fn f() {
+>   let x = 1;
+>   let y = x + 2;
+>   x = true;
+>   if x { y } else { 0 }
+> }
+> ```
+>
+> - It does not incur a type error at runtime
+>   - Common pattern in dynamically typed languages
+>   - However, the analysis will say "not ok"
+>
+> - The analysis ignores the order of execution and computes a single type for each identifier regardless of the program point at which it is used
+> - Such an analysis is called a flow-insensitive analysis
+> - We will cover flow-sensitive analyses later in the course
+
+### 해설
+
+**개념 설명**
+
+현재의 타입 분석(flow-insensitive)은 프로그램의 실행 흐름(control flow)을 무시합니다.
+
+코드 분석:
+1. `let x = 1;`: x를 정수로 초기화
+2. `let y = x + 2;`: y는 정수 (1 + 2)
+3. `x = true;`: x를 재할당하여 불린 값 할당
+4. `if x { y } else { 0 }`: 조건이 참이면 y (정수), 거짓이면 0 (정수)
+
+실제 실행:
+- 런타임에는 문제가 없습니다: x는 true이고, 조건이 참이므로 y (정수)를 반환합니다.
+
+타입 분석의 문제:
+- 분석기는 x의 타입을 정해야 하는데, x는 한 번은 1 (정수), 다시는 true (불린)입니다.
+- Flow-insensitive 분석은 모든 할당을 고려하므로, x의 타입을 `int` 또는 `bool` 모두를 만족해야 합니다.
+- 이는 불가능하므로 "not ok"를 반환합니다.
+
+**배경 지식** (학부 2학년 수준)
+
+Flow-insensitive 분석은 단순하고 빠르지만, 거짓 양성(false positive)이 많습니다. Flow-sensitive 분석은 각 프로그램 지점에서 다른 타입을 허용하지만 더 복잡합니다.
+
+**전체적인 맥락**
+
+이것은 현재 분석의 첫 번째 한계입니다. 나중에 flow-sensitive 분석을 배우면 이 문제를 해결할 수 있습니다.
+
+---
+
+## 슬라이드 19: Limitations — Polymorphism (Problem)
+
+### 원문 내용
+> **Limitations — Polymorphism (Problem)**
+>
+> ```
+> fn f(x) { x }
+> fn g() {
+>   f(1);
+>   f(true)
+> }
+> ```
+>
+> - It does not incur a type error at runtime
+>   - f is polymorphic (generic function)
+>   - We can type it as fn f<T>(x: T) → T { x } in Rust
+>
+> - However, the analysis will say "not ok"
+>   - [x] needs to be both i32 and bool
+
+### 해설
+
+**개념 설명**
+
+현재의 monomorphic 타입 분석은 다형성(polymorphism)을 지원하지 않습니다.
+
+코드 분석:
+- 함수 `f(x)`는 입력을 그대로 반환합니다 (항등 함수).
+- `g()`에서 `f(1)` 호출: 정수를 전달
+- `g()`에서 `f(true)` 호출: 불린을 전달
+
+실제 실행:
+- 함수 f는 일반적(generic)이어서, 어떤 타입이든 받을 수 있습니다.
+- Rust에서는 `fn f<T>(x: T) → T`로 정의할 수 있습니다.
+
+타입 분석의 문제:
+- 현재 분석은 f의 매개변수 x에 대해 단 하나의 타입만 할당합니다 (monomorphic).
+- `f(1)`에서: `[x] = i32`
+- `f(true)`에서: `[x] = bool`
+- 두 제약이 모순되므로 "not ok"를 반환합니다.
+
+**배경 지식** (학부 2학년 수준)
+
+다형성(polymorphism)은 동일한 코드가 여러 타입에서 작동할 수 있도록 하는 기능입니다. 매개변수 다형성(parametric polymorphism) 또는 제네릭(generics)이라고도 불립니다.
+
+**전체적인 맥락**
+
+이것은 두 번째 주요 한계입니다. 다음 슬라이드에서 해결책을 제시합니다.
+
+---
+
+## 슬라이드 20: Limitations — Polymorphism (Solution)
+
+### 원문 내용
+> **Limitations — Polymorphism (Solution)**
+>
+> - To address this, we need to instantiate a function with different types at different call sites
+>   - [f] := ∀X. fn(X) → X
+>   - In f(1), [f] is instantiated to fn(i32) → i32
+>   - In f(true), [f] is instantiated to fn(bool) → bool
+>
+> - This is the key idea of Hindley-Miller algorithm and often called let-polymorphism
+> - The time complexity is exponential in the worst case¹²
+>
+> - Later in the course, we will cover context-sensitive analyses, which distinguish different call sites of a function and are similar to let-polymorphism
+>
+> ¹Deciding ML typability is complete for deterministic exponential time (Mairon, 1990)
+> ²ML typability is Dexptime-complete (Kfoury et al., 1990)
+
+### 해설
+
+**개념 설명**
+
+다형성을 지원하기 위한 해결책은 호출 지점(call site)에 따라 함수를 다른 타입으로 인스턴스화하는 것입니다.
+
+핵심 아이디어:
+- 함수 f의 타입을 다형 타입(polymorphic type) `∀X. fn(X) → X`로 정의합니다.
+  - ∀는 전칭 정량자(universal quantifier)로 "모든 타입 X에 대해"를 의미합니다.
+  - X는 타입 변수(type variable)이며, 호출 지점마다 구체적인 타입으로 치환될 수 있습니다.
+
+- 각 호출 지점에서 함수를 인스턴스화합니다:
+  - `f(1)` 호출: X를 i32로 치환 → `fn(i32) → i32`
+  - `f(true)` 호출: X를 bool로 치환 → `fn(bool) → bool`
+
+**배경 지식** (학부 2학년 수준)
+
+이것은 **Hindley-Milner(HM) 타입 시스템**의 핵심입니다. ML, Haskell 등의 함수형 언어에서 사용됩니다.
+
+용어:
+- **Let-polymorphism**: let 바인딩(함수 정의)에서만 다형성을 허용하는 제한된 형태의 다형성입니다.
+- **Parametric polymorphism**: 타입 변수를 사용하여 일반적인 함수를 정의합니다.
+
+**수식/기호/코드 설명**
+
+- ∀X: 전칭 정량자 (for all types X)
+- fn(X) → X: X 타입을 받아 X 타입을 반환하는 함수
+- Instantiation: 각 호출 지점에서 타입 변수를 구체적인 타입으로 대체
+
+**복잡도**
+
+지만, 이것은 계산 비용이 높습니다:
+- ML의 타입 추론은 **EXPTIME-complete** (결정론적 지수 시간 완료)입니다.
+- 최악의 경우 지수 시간이 소요됩니다.
+
+**전체적인 맥락**
+
+Let-polymorphism은 강력하지만 복잡합니다. 나중에 **context-sensitive analysis**를 배우면 다른 접근법을 볼 수 있습니다.
+
+**추가 설명** (선택)
+
+Hindley-Milner 알고리즘은 다음과 같이 작동합니다:
+1. 함수를 일반적인 타입(다형 타입)으로 정의합니다.
+2. 각 호출 지점에서 타입 변수를 '신선한' 타입 변수로 인스턴스화합니다.
+3. 호출 인자와 함수 매개변수를 Unify하여 인스턴스화된 타입 변수들을 구체화합니다.
+
+---
+
+## 슬라이드 21: Let-Polymorphism
+
+### 원문 내용
+> **Let-Polymorphism**
+>
+> - Even with let polymorphism, false alarms are unavoidable
+> - No higher-rank polymorphism
+>
+> ```
+> fn f(x) { x }
+> fn g(y) {
+>   y(1);
+>   y(true)
+> }
+> fn h() { g(f) }
+> ```
+>
+> - y is a parameter and cannot be polymorphically instantiated at different call sites
+
+### 해설
+
+**개념 설명**
+
+Let-polymorphism도 모든 문제를 해결하지 못합니다. 특히 higher-rank polymorphism이 없기 때문입니다.
+
+코드 분석:
 ```
+fn f(x) { x }           // 항등 함수
 fn g(y) {
-  y(1);      // y는 int를 받는 함수
-  y(true)    // y는 bool을 받는 함수
+  y(1);                  // y를 정수 1로 호출
+  y(true)                // y를 불린 true로 호출
 }
-```
-이 경우 y는 `let` 바인딩이 아니라 함수 매개변수이므로, 다형적으로 사용할 수 없습니다.
-
-### 배경 지식
-- **단형성(Monomorphism)**: 모든 식이 하나의 특정 타입만 가질 수 있는 제약입니다.
-- **다형성(Polymorphism)**: 하나의 식이 여러 타입을 가질 수 있는 기능입니다.
-- **고차 다형성(Higher-Rank Polymorphism)**: 함수의 매개변수가 다형적 타입을 가질 수 있게 하는 기능입니다. 복잡하고 타입 체킹이 어렵습니다.
-- **매개변수적 다형성(Parametric Polymorphism)**: 제네릭(generics) 또는 타입 매개변수를 사용한 다형성입니다.
-
-### 수식/기호/코드 설명
-```
-Let-다형성이 적용되는 경우:
-
-let id = fn(x) { x } in
-  id(1) +    // id: int → int
-  id(true)   // id: bool → bool
-
-각 호출 위치에서 id는 다른 타입으로 인스턴스화됨:
-  - id(1): id의 타입 X → X를 int → int로 특수화
-  - id(true): id의 타입 X → X를 bool → bool로 특수화
-
-제약:
-  id의 정의: X → X
-  id(1): Unify(int, X) → X = int 특수화
-  id(true): Unify(bool, X) → X = bool 특수화
-  (각 호출에서 독립적으로 특수화 가능)
+fn h() { g(f) }         // g에 항등 함수 f를 전달
 ```
 
-```
-Let-다형성이 적용되지 않는 경우:
+실제 실행:
+- `h()` 호출 → `g(f)` 호출
+- `g` 내에서 y = f (항등 함수)
+- `y(1)` → `f(1)` → 정수 반환
+- `y(true)` → `f(true)` → 불린 반환
+- 모두 성공합니다.
 
-fn f(x) { x }
-fn g(y) {
-  y(1);    // y: τy → τresult1
-  y(true)  // y: τy → τresult2
-}
-fn h() { g(f) }
+Let-polymorphism의 문제:
+- Let-polymorphism은 **함수 정의(let binding)**에서만 다형성을 허용합니다.
+- 함수 **매개변수(parameter)**는 다형성으로 처리되지 않습니다.
+- y는 g의 매개변수이므로, 서로 다른 호출 지점 `y(1)`과 `y(true)`에서 다양하게 인스턴스화될 수 없습니다.
+- 따라서 분석기는 "not ok"를 반환합니다.
 
-y는 매개변수이므로 하나의 타입 τy만 가짐:
-  - y(1): Unify(τy, τarg1 → τresult1) 및 Unify(τarg1, int)
-  - y(true): Unify(τy, τarg2 → τresult2) 및 Unify(τarg2, bool)
+**배경 지식** (학부 2학년 수준)
 
-즉:
-  - τy = int → τresult1
-  - τy = bool → τresult2
+Higher-rank polymorphism은 매개변수 자체가 다형 타입일 수 있게 하는 기능입니다. 예: `fn g(y: ∀T. fn(T) → T)`
 
-이 두 제약은 모순 (τy는 하나의 타입):
-  Unify(int → τresult1, bool → τresult2)
-  → int ≠ bool → 에러!
+이를 지원하려면 타입 추론 알고리즘이 훨씬 복잡해집니다.
 
-하지만 Haskell 같은 언어에서는 고차 다형성으로 이를 허용:
-  y: ∀a. a → a  (y의 매개변수는 모든 타입이 될 수 있음)
-```
+**전체적인 맥락**
 
-### 전체적인 맥락
-Let-다형성은 표현력과 구현 단순성 사이의 절충안입니다. 많은 실용적인 상황에서는 let-다형성으로 충분하지만, 고급 사용 사례(고차 함수의 다형적 매개변수 등)에는 부족합니다. 고차 다형성은 이론적으로 매우 흥미롭지만, 타입 체킹 복잡도가 증가합니다.
+Let-polymorphism의 한계를 보여주는 예제입니다. 다음 슬라이드는 다른 한계를 다룹니다.
 
 ---
 
-## 슬라이드 22: Let-다형성 (계속) - 다형적 재귀의 부재
+## 슬라이드 22: Let-Polymorphism (cont.)
 
-### 개념 설명
-Let-다형성의 또 다른 중요한 한계는 **다형적 재귀(polymorphic recursion)** 를 지원하지 않는다는 것입니다.
+### 원문 내용
+> **Let-Polymorphism (cont.)**
+>
+> - No polymorphic recursion
+>
+> ```
+> fn f(x, n) {
+>   if n > 1 {
+>     f(true, n - 1);
+>   } else if n == 1 {
+>     f(0, n - 1);
+>   }
+>   x
+> }
+> ```
+>
+> - Each recursive call requires x to have a different type
+> - With unrestricted higher-rank polymorphism or polymorphic recursion, solving the constraints becomes undecidable
 
-**다형적 재귀 예시:**
+### 해설
+
+**개념 설명**
+
+Let-polymorphism은 다형 재귀(polymorphic recursion)도 지원하지 않습니다.
+
+코드 분석:
 ```
 fn f(x, n) {
   if n > 1 {
-    f(true, n - 1)    // x의 새 값은 bool
+    f(true, n - 1);      // 첫 번째 재귀 호출: x = true (불린)
   } else if n == 1 {
-    f(0, n - 1)       // x의 새 값은 int
+    f(0, n - 1);         // 두 번째 재귀 호출: x = 0 (정수)
   }
-  x                   // x를 반환
+  x                        // 기본 케이스: x를 반환
 }
 ```
 
-이 함수는 각 재귀 호출에서 x가 다른 타입이기를 원합니다:
-- 첫 번째 호출: x는 임의의 타입
-- 두 번째 호출: x는 bool
-- 세 번째 호출: x는 int
+실제 실행:
+- n = 2일 때: `f(true, 2)` → n > 1이므로 `f(true, 1)` 호출
+- n = 1일 때: `f(true, 1)` → n == 1이므로 `f(0, 0)` 호출
+- n = 0일 때: `f(0, 0)` → 기본 케이스, 0 반환
 
-### 배경 지식
-- **재귀(Recursion)**: 함수가 자기 자신을 호출하는 것입니다.
-- **다형적 재귀**: 재귀 호출이 다른 타입 인수를 사용하는 경우입니다.
-- **단형적 재귀**: 모든 재귀 호출이 같은 타입 인수를 사용해야 하는 경우입니다.
-- **타입 체킹의 결정 가능성(Decidability)**: 타입 체킹 문제의 해결 가능성입니다.
+각 재귀 호출에서 x의 타입이 다릅니다:
+- 첫 호출: x는 bool
+- 두 번째 호출: x는 i32
 
-### 수식/기호/코드 설명
-```
-다형적 재귀 함수:
+Let-polymorphism의 문제:
+- 같은 함수의 여러 호출에서 매개변수 x가 다른 타입이어야 합니다.
+- 하지만 x는 함수 정의에서의 매개변수이므로, 단 하나의 타입만 가질 수 있습니다.
+- 따라서 제약이 충돌하여 "not ok"를 반환합니다.
 
-fn f(x: τx, n: int) → τx {
-  if n > 1 {
-    f(true, n - 1)      // true: bool, 하지만 τx는?
-  } else if n == 1 {
-    f(0, n - 1)         // 0: int, 하지만 τx는?
-  }
-  return x;
-}
+**배경 지식** (학부 2학년 수준)
 
-제약 수집 (Let-다형성 없음):
-  C1: τx는 초기 x의 타입
-  C2: 첫 번째 재귀: Unify(τx, bool)  (f(true, ...))
-  C3: 두 번째 재귀: Unify(τx, int)   (f(0, ...))
+Polymorphic recursion을 지원하려면 각 재귀 호출에 대해 명시적인 타입 정보를 요구해야 합니다(예: Haskell의 RAML 언어).
 
-Unify 실행:
-  - C2: M[τx] = bool
-  - C3: Unify(τx, int) = Unify(bool, int) → 에러!
+**복잡도 문제**
 
-다형적 재귀를 지원한다면:
-  fn f(x: ∀a. a, n: int) → (∀a. a) {
-    ...
-  }
+무제한 higher-rank polymorphism 또는 polymorphic recursion을 지원하면:
+- 제약 해결이 **Undecidable** (결정 불가능)이 됩니다.
+- 즉, 어떤 알고리즘도 모든 입력에 대해 정답을 줄 수 없습니다.
 
-  이렇게 하면:
-  - 첫 번째 재귀: f(true, ...)에서 x는 bool로 특수화
-  - 두 번째 재귀: f(0, ...)에서 x는 int로 특수화
-  - 성공
-```
+**전체적인 맥락**
 
-### 제약 해결의 결정 가능성
-
-이 슬라이드에서 인용되는 연구 논문들:
-- **Henglein (1993)**: 제한 없는 고차 다형성이 있는 타입 추론의 결정 불가능성을 증명
-- **Kfoury et al. (1993), Kfoury and Wells (1999)**: 다형적 재귀 타입 체킹의 복잡도에 관한 연구
-
-이들 논문은 다음을 보여줍니다:
-```
-다형적 재귀를 완전히 지원하거나 무제한 고차 다형성을 허용하면,
-타입 체킹 문제가 결정 불가능(undecidable)해질 수 있다.
-
-즉, 모든 프로그램에 대해 타입 체크의 답을 주는 알고리즘이
-존재하지 않을 수 있다는 뜻입니다.
-```
-
-### 전체적인 맥락
-이 슬라이드는 "왜 실제 프로그래밍 언어들이 Let-다형성만 지원하는가?"에 대한 이론적 근거를 제시합니다. 더 강력한 다형성을 원하면, 타입 체킹이 불가능해질 수 있습니다. 따라서 표현력과 결정 가능성 사이의 신중한 균형을 맞춰야 합니다.
+이것은 다형성 지원의 또 다른 한계입니다. 실용적인 타입 시스템은 이러한 한계를 인식하고 설계됩니다.
 
 ---
 
-## 슬라이드 23: 제약의 한계 - 기타 런타임 에러
+## 슬라이드 23: Limitations — Other Runtime Errors
 
-### 개념 설명
-타입 분석은 **타입 에러(type error)** 만 감지할 수 있습니다. 많은 프로그래밍 에러는 타입 시스템으로 표현될 수 없으므로, 타입 분석으로는 감지할 수 없습니다.
+### 원문 내용
+> **Limitations — Other Runtime Errors**
+>
+> - Division by zero
+> - Stack-use-after-scope
+>   - Catching dangling references requires lifetime/region analysis, which is beyond the scope of this type analysis
+>
+> ```
+> fn f() {
+>   let x = 0;
+>   &x
+> }
+> fn g() {
+>   *f()
+> }
+> ```
 
-**감지할 수 없는 런타임 에러들:**
+### 해설
 
-1. **0으로 나누기 (Division by Zero)**
-   ```
-   x / 0
-   ```
-   x와 0 모두 정수 타입이므로 타입 에러가 아닙니다. 하지만 런타임에 나눗셈 에러 발생.
+**개념 설명**
 
-2. **dangling reference (포인터 사용 후 해제)**
-   ```
-   fn f() { let x = 0; &x }
-   fn g() { *f() }
-   ```
-   f가 반환하는 참조는 f의 로컬 변수 x를 가리킵니다. 하지만 f에서 반환되면 x는 스택에서 제거되므로, g에서 *f()를 역참조하면 dangling reference 에러 발생.
+타입 분석이 감지할 수 없는 다른 런타임 에러들이 있습니다.
 
-### 배경 지식
-- **타입 안전성(Type Safety)**: 타입 시스템이 보장할 수 있는 특정 종류의 에러로부터의 안전성입니다.
-- **메모리 안전성(Memory Safety)**: 잘못된 메모리 접근(dangling pointer, buffer overflow 등)으로부터의 안전성입니다.
-- **라이프타임(Lifetime)**: Rust에서 도입한 개념으로, 각 값이 메모리에서 얼마나 오래 살아있는지를 추적합니다.
-- **영역 분석(Region Analysis)**: 변수들의 수명 범위를 분석하는 기법입니다.
+**1. Division by Zero (0으로 나누기)**
 
-### 수식/기호/코드 설명
+예:
+```c
+int x = 0;
+int y = 5 / x;  // 런타임 에러
 ```
-Dangling Reference 예시:
 
-fn f() → &int {
-  let x = 0;
-  &x              // x의 주소 반환
+타입 검사만으로는 0으로 나누는 것을 감지할 수 없습니다. 이를 위해서는:
+- 값 범위 분석(range analysis)
+- 상수 전파(constant propagation)
+등이 필요합니다.
+
+**2. Stack-use-after-scope (스택 사용 후 범위 벗어남)**
+
+코드 분석:
+```
+fn f() {
+  let x = 0;      // x는 f의 스택에 할당됨
+  &x              // x의 참조를 반환
 }
-
 fn g() {
-  let r = f();
-  *r              // r이 가리키는 위치의 값 읽기
+  *f()            // f의 참조를 역참조
 }
-
-타입 분석 관점:
-  - f의 반환 타입: &int
-  - r의 타입: &int
-  - *r의 타입: int
-  - 타입으로는 모든 게 맞음!
-
-하지만 메모리 관점:
-  - f() 호출 후, f의 스택 프레임은 제거됨
-  - x는 스택 메모리의 그 위치에서 해제됨
-  - r은 해제된 메모리를 가리킴
-  - *r은 해제된 메모리에 접근 → 에러!
-
-이를 감지하려면 라이프타임 분석이 필요:
-  fn f() → &'a int {  // 'a는 어디의 라이프타임?
-    let x = 0;       // x의 라이프타임은 f의 스택 프레임
-    &x               // 문제: 반환 타입의 라이프타임과 불일치
-  }
 ```
 
-**프로그래밍 언어의 해결책:**
-- **Rust**: 엄격한 라이프타임 검사로 dangling reference를 컴파일 타임에 감지
-- **Java, Python**: 가비지 컬렉션(GC)으로 메모리 자동 관리 (런타임 안전성)
-- **C**: 아무 보호 없음 (프로그래머 책임)
+문제:
+- f()가 반환될 때, f의 로컬 변수 x는 스택에서 해제됩니다.
+- g()에서 `*f()`는 해제된 메모리에 접근합니다 (dangling reference).
+- 이는 메모리 안전 에러입니다.
 
-### 전체적인 맥락
-이 슬라이드는 중요한 메시지를 전달합니다: **타입 분석은 강력한 도구이지만 만능은 아니다.** 많은 종류의 에러가 여전히 남아있으며, 이를 해결하려면:
-- 라이프타임/영역 분석 (메모리 안전성)
-- 범위 검사 (배열 접근 안전성)
-- 0 나누기 검사 (산술 에러 감지)
-등의 추가 분석 기법이 필요합니다.
+타입 분석만으로 감지 불가:
+- 이를 감지하려면 **lifetime/region analysis**가 필요합니다.
+- 이는 변수의 생명주기(lifetime)를 추적하는 고급 분석입니다.
+
+**배경 지식** (학부 2학년 수준)
+
+이는 **메모리 안전(memory safety)** 문제입니다. Rust는 lifetime 시스템으로 이를 컴파일 타임에 감지합니다.
+
+**전체적인 맥락**
+
+타입 분석은 강력하지만, 모든 런타임 에러를 감지할 수 없습니다. 다른 종류의 분석(정수 범위 분석, lifetime 분석 등)이 필요합니다.
 
 ---
 
-## 슬라이드 24: 요약 (Summary)
+## 슬라이드 24: Summary
 
-### 개념 설명
-이 강의의 핵심 내용을 정리하면:
+### 원문 내용
+> **Summary**
+>
+> - Constraints are solved by the Unify algorithm, which uses union-find for type variable equivalences and a mapping for variable-to-type bindings
+> - Tuple types require an absent-element type ⋄ and inequality constraints to correctly reject out-of-bounds projections
+> - The analysis is flow-insensitive and monomorphic; let-polymorphism addresses the latter but with exponential worst-case complexity
 
-**1. 제약 해결 알고리즘:**
-- Union-Find 자료 구조로 타입 변수의 동치 관계 추적
-- 매핑 M으로 각 동치류의 대표원을 구체적 타입으로 바인딩
-- Unify 알고리즘으로 제약을 하나씩 처리
-- Resolve 함수로 복합 타입을 재귀적으로 풀어냄
-- DeepResolve로 최종 타입 확정
+### 해설
 
-**2. 튜플 타입 처리:**
-- 순진한 접근법은 범위 초과 접근을 감지 불가
-- ◇ (absent element) 기호와 부등식 제약으로 올바른 감지 가능
+**개념 설명**
 
-**3. 근본적 한계들:**
-- 흐름 무감각성: 제어 흐름 순서를 무시
-- 단형성: Let-다형성만 지원, 함수 매개변수 다형성 불가
-- 결정 불가능성: 무제한 고차 다형성은 타입 체킹 불가능
-- 타입 에러만 감지: 다른 종류의 런타임 에러는 불가
+이 강의의 주요 내용을 요약합니다.
 
-### 배경 지식
-- **정적 분석(Static Analysis)**: 프로그램을 실행하지 않고 코드를 분석하는 기법
-- **트레이드오프(Trade-off)**: 분석의 정확성, 완전성, 복잡도 사이의 상충
-- **근사(Approximation)**: 실제 프로그램 행동을 완벽히 모델링할 수 없으므로 근사를 사용
+**1. 제약 해결 메커니즘**
 
-### 수식/기호/코드 설명
-```
-전체 프로세스 요약:
+- **Unify 알고리즘**: 등식 제약(equality constraints)을 해결합니다.
+  - Union-Find: 타입 변수 간의 동등성 관리
+  - Mapping M: 타입 변수를 구체적인 타입에 바인딩
+  - Occurs 체크: 무한 타입 방지
+  - DeepResolve: 최종 타입 계산
 
-┌─────────────┐
-│  프로그램    │
-└──────┬──────┘
-       │
-       ▼
-┌──────────────────┐
-│ 1. 타입 변수 할당 │  (각 식에 X, Y, Z 등 부여)
-└──────┬───────────┘
-       │
-       ▼
-┌──────────────────┐
-│ 2. 제약 수집     │  (표현식 구조로부터 제약 생성)
-└──────┬───────────┘
-       │
-       ▼
-┌──────────────────────┐
-│ 3. Unify로 제약 해결  │  (Union-Find + M으로 효율적 처리)
-│    - 타입 변수 동일화 │  (union 연산)
-│    - 타입 매핑       │  (M에 기록)
-│    - 발생 검사       │  (무한 타입 방지)
-└──────┬───────────────┘
-       │
-       ▼
-┌──────────────────────┐
-│ 4. DeepResolve       │  (최종 타입 확정)
-│    모든 변수 해결     │
-└──────┬───────────────┘
-       │
-       ▼
-┌──────────────────────┐
-│ 5. 결과               │
-│ ✓ 타입 할당 성공      │  또는
-│ ✗ 타입 에러 보고      │
-└──────────────────────┘
-```
+**2. 튜플 타입 지원**
 
-**복잡도 분석:**
-```
-Union-Find: O(n * α(n)) - 거의 선형
-Unify: 최악 지수형 (다형적 인스턴스화)
-전체: 보통 다항식, 최악 지수형
-```
+- **Absent-element 타입 ⋄**: 존재하지 않는 튜플 원소를 나타냅니다.
+- **부등식 제약**: `[e.i] ≠ ⋄`를 통해 범위 밖의 투영을 거부합니다.
+- **구현**: 모든 등식을 먼저 해결한 후, 부등식을 확인합니다.
 
-### 전체적인 맥락
-이 강의 시리즈를 통해 학생들은 다음을 이해해야 합니다:
+**3. 분석의 한계**
 
-1. **이론적 기초**: 타입 추론과 제약 해결의 수학적 원리
-2. **실제 구현**: Union-Find, Unify 같은 효율적인 알고리즘
-3. **한계 인식**: 정적 분석의 불가피한 한계와 트레이드오프
-4. **실무 적용**: 제약 기반 분석이 실제 컴파일러(ML, Haskell, Rust 등)에서 어떻게 사용되는지
+- **Flow-insensitive**: 실행 순서를 무시하므로 재할당된 변수에서 문제가 생깁니다.
+  - 해결: Flow-sensitive 분석 (나중에 배움)
 
-다음 강의 (Lecture 5: Lattice-based Analysis (1))로 넘어가면, 더 일반적이고 강력한 프로그램 분석 기법인 격자(lattice) 기반 분석을 배웁니다. 그것은 타입 분석을 포함하여 더 넓은 범위의 프로그램 성질을 분석할 수 있는 프레임워크입니다.
+- **Monomorphic**: 함수의 단 하나 타입만 허용합니다.
+  - 해결: Let-polymorphism (Hindley-Milner 알고리즘)
+  - 비용: 최악의 경우 지수 시간 복잡도
+
+**4. 여전히 감지 불가능한 오류**
+
+- 0으로 나누기
+- Stack-use-after-scope (dangling references)
+- 이들을 위해서는 다른 종류의 분석이 필요합니다.
+
+**전체적인 맥락**
+
+이제 기본적인 타입 추론의 원리를 완전히 이해했습니다. 다음 강의에서는 flow-sensitive 분석이나 더 고급 주제를 다룰 것입니다.
 
 ---
 
-## 추가 학습 자료
+## 요약 정보
 
-### 권장 읽을거리
-1. **Union-Find에 대해**: "Disjoint-set data structure" (위키피디아 또는 알고리즘 교과서)
-2. **Unification에 대해**: "A Unification Algorithm" (Robinson, 1965)
-3. **타입 추론 역사**: "A History of Haskell: Being Lazy With Class" (Hudak et al.)
-4. **Rust의 라이프타임**: "The Rustonomicon" - Lifetime 섹션
+**강의 주제**: Type Analysis (2) - 제약 해결과 튜플 타입
 
-### 실습 문제
-1. 간단한 프로그램에 대해 손으로 제약을 수집하고 Unify 과정을 따라가기
-2. Union-Find 구조 구현 및 테스트
-3. 주어진 제약 집합에 대해 Unify 결과 예측하기
-4. 흐름 무감각 분석의 거짓 양성 사례 찾기
+**핵심 개념들**:
+1. Union-Find와 Mapping을 이용한 제약 해결
+2. Unify, Resolve, DeepResolve 알고리즘
+3. Occurs 체크를 통한 무한 타입 방지
+4. 튜플 타입과 범위 체크 (⋄ 타입과 부등식 제약)
+5. 현재 분석의 한계 (flow-insensitivity, monomorphism)
+6. Let-polymorphism을 통한 다형성 지원
 
-### 핵심 개념 체크리스트
-- [ ] Union-Find의 path compression 이해
-- [ ] Resolve의 재귀적 해결 과정 이해
-- [ ] Unify 알고리즘의 4가지 경우 구분
-- [ ] 발생 검사의 필요성 이해
-- [ ] ◇를 사용한 튜플 타입 제약 이해
-- [ ] 흐름 무감각성의 의미와 한계 이해
-- [ ] Let-다형성과 고차 다형성의 차이 이해
-- [ ] 타입 분석의 한계와 다른 분석 기법의 필요성 인식
+**적용 수준**: 학부 2학년 이상 (타입 시스템 이해 필수)
 
----
-
-**강의 작성**: CSE552 Program Analysis
-**대상 학년**: 2학년 이상 전산학 전공 학생
-**난이도**: 중상 (기본 자료 구조와 알고리즘 지식 권장)
-**작성 일자**: 2024년
+**다음 강의 선행 주제**: Flow-sensitive 분석, Context-sensitive 분석
