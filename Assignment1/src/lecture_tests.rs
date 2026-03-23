@@ -478,3 +478,129 @@ fn g() { f(1, 2) }
 ",
     );
 }
+
+// =====================================================================
+//  추가 검증: 슬라이드에서 실패해야 하는 미테스트 케이스들
+// =====================================================================
+
+/// [Lecture 4, Slide 9] 비-튜플 타입에 대한 프로젝션 — 거부되어야 함
+///
+/// "Projection on non-tuple types should be rejected"
+///
+/// x = 1 → ⟦x⟧ = i32
+/// x.0 → ensure_tuple(x, 1) → x는 i32이므로 튜플이 아님 → failed
+///
+/// 기대 결과: no solution
+#[test]
+fn test_lec4_projection_on_non_tuple_i32() {
+    test_none("fn f() { let x = 1; x.0 }");
+}
+
+/// [Lecture 4, Slide 9] bool 타입에 대한 프로젝션 — 거부되어야 함
+///
+/// x = true → ⟦x⟧ = bool
+/// x.0 → ensure_tuple(x, 1) → bool은 튜플이 아님 → failed
+///
+/// 기대 결과: no solution
+#[test]
+fn test_lec4_projection_on_non_tuple_bool() {
+    test_none("fn f() { let x = true; x.0 }");
+}
+
+/// [Lecture 4, Slide 9] 함수 타입에 대한 프로젝션 — 거부되어야 함
+///
+/// g는 fn(i32)->i32 타입
+/// g.0 → ensure_tuple(g, 1) → FnPtr는 튜플이 아님 → failed
+///
+/// 기대 결과: no solution
+#[test]
+fn test_lec4_projection_on_fn_type() {
+    test_none(
+        "
+fn g(x: ()) { x + 1 }
+fn f() { g.0 }
+",
+    );
+}
+
+/// [Lecture 4, Slide 9] 참조 타입에 대한 프로젝션 — 거부되어야 함
+///
+/// &1 → Ref(i32)
+/// (&1).0 → ensure_tuple 시 Ref 타입 → 튜플이 아님 → failed
+///
+/// 기대 결과: no solution
+#[test]
+fn test_lec4_projection_on_ref_type() {
+    test_none("fn f() { let x = &1; x.0 }");
+}
+
+/// [Lecture 4, Slide 18] Flow-Insensitivity 한계 — 대입으로 인한 타입 충돌
+///
+/// "The analysis ignores the order of execution and computes a single type
+///  for each identifier regardless of the program point at which it is used"
+///
+/// x + 2 → ⟦x⟧ = i32
+/// if x → ⟦x⟧ = bool
+/// i32 ≠ bool → failed
+///
+/// 런타임에는 동적 타입 언어에서 오류 없을 수 있지만, 분석은 "not ok"
+///
+/// 기대 결과: no solution
+#[test]
+fn test_lec4_flow_insensitivity() {
+    test_none(
+        "
+fn f(x: ()) {
+    let y = x + 2;
+    if x > 0 { y } else { 0 };
+    if x { 1 } else { 0 }
+}
+",
+    );
+}
+
+/// [Lecture 4, Slide 22] Polymorphic Recursion — 해 없음
+///
+/// "Each recursive call requires x to have a different type"
+///
+/// f(true, n-1) → ⟦x⟧ = bool
+/// f(0, n-1)   → ⟦x⟧ = i32
+/// bool ≠ i32 → 해 없음
+///
+/// 기대 결과: no solution
+#[test]
+fn test_lec4_polymorphic_recursion() {
+    test_none(
+        "
+fn f(x: (), n: ()) {
+    if n > 1 {
+        f(true, n - 1);
+    } else if n == 1 {
+        f(0, n - 1);
+    }
+    x
+}
+",
+    );
+}
+
+/// [Lecture 4, Slide 16] Correct Version — OOB 접근 (인덱스 3)
+///
+/// (1, true, 3) → 3개 원소 튜플
+/// x.3 → 4번째 원소 접근 → Absent → no solution
+///
+/// 기대 결과: no solution
+#[test]
+fn test_lec4_tuple_oob_larger() {
+    test_none("fn f() { let x = (1, true, 3); x.3 }");
+}
+
+/// [Lecture 4, Slides 15-16] Correct Version — 유효 접근 확인
+///
+/// (1, true) 튜플의 x.0 접근은 i32 → 정상
+///
+/// 기대 결과: 해 존재, TYPEVAR 없음
+#[test]
+fn test_lec4_correct_tuple_valid_access() {
+    test("fn f() { let x = (1, true); x.0 + 1 }");
+}
