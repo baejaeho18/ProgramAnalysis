@@ -39,11 +39,19 @@ pub fn analyze<'tcx>(tcx: TyCtxt<'tcx>) -> Option<AnalysisResult> {
         local_ty: collector.local_ty,
         fn_ret_ty: collector.fn_ret_ty,
         fn_ty: collector.fn_ty,
+        field_access_vars: Vec::new(),
     };
     tcx.hir_visit_all_item_likes_in_crate(&mut visitor);
 
     if visitor.infer.failed {
         return None;
+    }
+
+    // Check field access results for Absent types (out-of-bounds tuple access)
+    for &var in &visitor.field_access_vars {
+        if visitor.infer.is_absent(var) {
+            return None;
+        }
     }
 
     // Resolve types
@@ -71,8 +79,11 @@ enum TypeInfo {
     Bool,
     I32,
     Ref(usize),
-    Tuple(Vec<usize>),
+    /// (elements, is_concrete) — is_concrete is true when created by a tuple expression
+    Tuple(Vec<usize>, bool),
     FnPtr(Vec<usize>, usize),
+    /// Absent element: marks a tuple position that does not exist in the original tuple
+    Absent,
 }
 
 struct TypeInfer {
@@ -116,7 +127,17 @@ impl TypeInfer {
         self.fresh_with(TypeInfo::Ref(inner))
     }
     fn make_tuple(&mut self, elems: Vec<usize>) -> usize {
-        self.fresh_with(TypeInfo::Tuple(elems))
+        self.fresh_with(TypeInfo::Tuple(elems, false))
+    }
+    fn make_concrete_tuple(&mut self, elems: Vec<usize>) -> usize {
+        self.fresh_with(TypeInfo::Tuple(elems, true))
+    }
+    fn make_absent(&mut self) -> usize {
+        self.fresh_with(TypeInfo::Absent)
+    }
+    fn is_absent(&self, var: usize) -> bool {
+        let rep = self.find(var);
+        matches!(self.info[rep], Some(TypeInfo::Absent))
     }
     fn make_fn_ptr(&mut self, params: Vec<usize>, ret: usize) -> usize {
         self.fresh_with(TypeInfo::FnPtr(params, ret))
@@ -198,15 +219,24 @@ impl TypeInfer {
                 self.info[r] = Some(TypeInfo::Ref(a));
                 self.unify(a, b);
             }
-            (TypeInfo::Tuple(mut as_), TypeInfo::Tuple(mut bs)) => {
+            (TypeInfo::Tuple(mut as_, ac), TypeInfo::Tuple(mut bs, bc)) => {
+                let concrete = ac || bc;
                 while as_.len() < bs.len() {
-                    as_.push(self.fresh());
+                    if ac {
+                        as_.push(self.make_absent());
+                    } else {
+                        as_.push(self.fresh());
+                    }
                 }
                 while bs.len() < as_.len() {
-                    bs.push(self.fresh());
+                    if bc {
+                        bs.push(self.make_absent());
+                    } else {
+                        bs.push(self.fresh());
+                    }
                 }
                 let r = self.find(rep);
-                self.info[r] = Some(TypeInfo::Tuple(as_.clone()));
+                self.info[r] = Some(TypeInfo::Tuple(as_.clone(), concrete));
                 for i in 0..as_.len() {
                     self.unify(as_[i], bs[i]);
                 }
@@ -222,6 +252,11 @@ impl TypeInfer {
                     self.unify(ap[i], bp[i]);
                 }
                 self.unify(ar, br);
+            }
+            // Absent yields to any concrete type; Absent + Absent stays Absent
+            (TypeInfo::Absent, other) | (other, TypeInfo::Absent) => {
+                let r = self.find(rep);
+                self.info[r] = Some(other);
             }
             _ => {
                 self.failed = true;
@@ -239,15 +274,19 @@ impl TypeInfer {
             None => {
                 let elems: Vec<usize> = (0..min_len).map(|_| self.fresh()).collect();
                 let r = self.find(var);
-                self.info[r] = Some(TypeInfo::Tuple(elems.clone()));
+                self.info[r] = Some(TypeInfo::Tuple(elems.clone(), false));
                 Some(elems)
             }
-            Some(TypeInfo::Tuple(mut elems)) => {
+            Some(TypeInfo::Tuple(mut elems, concrete)) => {
                 while elems.len() < min_len {
-                    elems.push(self.fresh());
+                    if concrete {
+                        elems.push(self.make_absent());
+                    } else {
+                        elems.push(self.fresh());
+                    }
                 }
                 let r = self.find(var);
-                self.info[r] = Some(TypeInfo::Tuple(elems.clone()));
+                self.info[r] = Some(TypeInfo::Tuple(elems.clone(), concrete));
                 Some(elems)
             }
             Some(other) => {
@@ -277,7 +316,8 @@ impl TypeInfer {
                 let inner = *inner;
                 Some(Type::Ref(Box::new(self.resolve_inner(inner, stack)?)))
             }
-            Some(TypeInfo::Tuple(elems)) => {
+            Some(TypeInfo::Absent) => Some(Type::Absent),
+            Some(TypeInfo::Tuple(elems, _)) => {
                 let elems = elems.clone();
                 let mut types = Vec::new();
                 for e in &elems {
@@ -357,6 +397,8 @@ struct ConstraintVisitor<'tcx> {
     local_ty: HashMap<HirId, usize>,
     fn_ret_ty: HashMap<LocalDefId, usize>,
     fn_ty: HashMap<LocalDefId, usize>,
+    /// Type variables from field access expressions, checked for Absent after solving
+    field_access_vars: Vec<usize>,
 }
 
 impl<'tcx> intravisit::Visitor<'tcx> for ConstraintVisitor<'tcx> {
@@ -428,7 +470,7 @@ impl<'tcx> intravisit::Visitor<'tcx> for ConstraintVisitor<'tcx> {
             ExprKind::Tup(elems) => {
                 let elem_tys: Vec<usize> =
                     elems.iter().map(|e| self.expr_ty[&e.hir_id]).collect();
-                let tup_ty = self.infer.make_tuple(elem_tys);
+                let tup_ty = self.infer.make_concrete_tuple(elem_tys);
                 self.infer.unify(ty, tup_ty);
             }
             ExprKind::Binary(op, lhs, rhs) => {
@@ -567,6 +609,7 @@ impl<'tcx> intravisit::Visitor<'tcx> for ConstraintVisitor<'tcx> {
                 let base_ty = self.expr_ty[&base.hir_id];
                 if let Some(elems) = self.infer.ensure_tuple(base_ty, index + 1) {
                     self.infer.unify(ty, elems[index]);
+                    self.field_access_vars.push(ty);
                 }
             }
             ExprKind::Path(QPath::Resolved(_, path)) => match path.res {
