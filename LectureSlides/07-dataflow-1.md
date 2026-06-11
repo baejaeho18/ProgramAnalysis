@@ -1,1695 +1,739 @@
-# CSE552 프로그램 분석 - 강의 7: 데이터흐름 분석 (1)
+# Dataflow Analysis (1) - 강의 슬라이드 해설
 
-강의자: Jaemin Hong
+CSE552 Program Analysis — Lecture 7
+강사: Jaemin Hong
 
----
-
-## Slide 1: 제목
-
-> Dataflow Analysis (1), CSE552 Program Analysis — Lecture 7, Jaemin Hong
-
-### 강의 개요
-
-이 강의는 데이터흐름 분석(Dataflow Analysis)의 기초를 다룹니다. 데이터흐름 분석은 프로그램의 각 포인트에서 변수들이 가질 수 있는 값의 범위를 추상적으로 계산하는 정적 분석 기법입니다. 이를 통해 컴파일러 최적화, 버그 탐지, 보안 분석 등 다양한 응용이 가능합니다.
+> **이 파일을 읽는 법**: 각 슬라이드는 `원문 내용` → `번역` → `해설`(개념·배경·맥락) → 필요 시 `각주`/`슬라이드 연결` 순서입니다. 누락·왜곡 없이 원문을 모두 담되 처음 보는 사람도 따라올 수 있게 풀어 썼습니다.
 
 ---
 
-## Slide 2: 데이터흐름 분석 개요
+## 강의 7 전체 조감도 (먼저 큰 그림)
 
+강의 5(격자)·6(고정점)은 "분석은 격자 위 단조 함수의 최소 고정점"이라는 이론을 세웠습니다. 강의 7은 그 이론을 **실제 분석 프레임워크 — 데이터플로우 분석(dataflow analysis)** 으로 구체화합니다. 한 문장으로: **CFG의 각 노드에 격자 변수를 두고, 노드 간 관계를 단조 제약식으로 적은 뒤, 고정점 알고리즘으로 푼다.**
+
+흐름:
+1. **단조 프레임워크(monotone framework)** (슬라이드 2~4): CFG + 완비 격자 + 단조 전이 함수의 조합. 분석을 만드는 일반 틀.
+2. **부호 분석을 데이터플로우로** (슬라이드 5~18): 격자(Var→Sign), **JOIN(선행자 합치기)**, 전이 함수(eval·추상 연산), 단조성, 고정점 풀이. 강의 5~6을 CFG 위에서 실현.
+3. **상수 전파(constant propagation)** (슬라이드 19~22): 같은 틀에 다른 격자(flat(ℤ))를 끼운 또 하나의 분석. 컴파일러 최적화 응용.
+4. **효율적 고정점 알고리즘** (슬라이드 23~34): 단순 반복 → Round Robin → Chaotic Iteration → **워크리스트(worklist)**. "바뀐 것만 다시 계산"으로 O(n·h·k) 달성.
+
+핵심 통찰: **데이터플로우 분석 = "격자 + JOIN + 전이 함수"를 CFG에 끼우고 고정점을 푸는 일반 프레임워크.** 부호·상수전파는 같은 틀의 다른 인스턴스일 뿐. 그리고 **워크리스트 알고리즘**은 Kleene 반복(강의 6)을 "의존성 기반으로 바뀐 노드만 재계산"해 효율화한 것 — Assignment 4와 강의 11의 cubic이 모두 이 워크리스트입니다.
+
+---
+
+## 슬라이드 1: 제목 슬라이드
+
+### 원문 내용
+> Dataflow Analysis (1)
+> CSE552 Program Analysis — Lecture 7
+> Jaemin Hong
+
+### 번역
+> 데이터플로우 분석 (1) / CSE552 프로그램 분석 — 강의 7 / 홍재민
+
+### 해설
+강의 5~6의 격자·고정점 이론을 **CFG 위의 데이터플로우 분석**으로 구체화하는 강의입니다.
+
+---
+
+## 슬라이드 2: Dataflow Analysis Overview
+
+### 원문 내용
 > - Starts with a CFG and a complete lattice (with a finite height)
-> - A lattice element represents abstract information for a CFG node
-> - The lattice may be: fixed for all programs, or parameterized by the program
+>   - A lattice element represents abstract information for a CFG node
+>   - The lattice may be: fixed for all programs, or parameterized by the program
 > - To each node v, we assign a constraint variable ⟦v⟧ ranging over the lattice elements
 
-### 개념 설명
+### 번역
+> - **CFG**와 **완비 격자(유한 높이)**에서 출발
+>   - 격자 원소 = 한 CFG 노드의 추상 정보
+>   - 격자는 모든 프로그램에 고정이거나, 프로그램에 따라 매개변수화됨
+> - 각 노드 v에 격자 원소를 값으로 갖는 **제약 변수 ⟦v⟧**를 부여
 
-데이터흐름 분석은 다음 세 가지 핵심 요소로 구성돼요:
+### 해설
 
-1. **제어 흐름 그래프(CFG)**: 프로그램의 실행 경로를 노드와 간선으로 표현한 그래프입니다.
-2. **완전 격자(Complete Lattice)**: 프로그램의 추상적 상태를 나타내는 수학적 구조입니다. 유한한 높이를 가져야 고정점 알고리즘이 종료돼요.
-3. **제약 변수**: 각 CFG 노드 v에 대해 ⟦v⟧이라는 변수를 할당하며, 이는 그 노드에서의 추상적 정보를 나타내요.
+**개념 설명 — 데이터플로우 분석의 뼈대 ★**
 
-### 배경 지식
+데이터플로우 분석의 구성 요소:
+1. **CFG**(강의 2의 MIR): 노드(기본 블록/문장)와 간선(제어 흐름).
+2. **완비 격자**(강의 5): 추상 정보의 도메인(부호·구간 등). **유한 높이**라야 종료(강의 6 Kleene).
+3. **각 노드에 변수 ⟦v⟧**: "노드 v에서의 추상 상태".
 
-완전 격자(Complete Lattice)는 다음을 만족하는 순서 집합이에요:
-- 모든 부분집합에 대해 최소상한(supremum)과 최대하한(infimum)이 존재
-- 이를 ⊔(join)과 ⊓(meet) 연산으로 표현합니다.
-
-### 전체적 맥락
-
-격자는 고정되거나 프로그램에 따라 매개변수화될 수 있어요:
-- **고정 격자**: 모든 프로그램에 대해 동일한 격자를 사용 (예: 부호 분석)
-- **매개변수화된 격자**: 프로그램의 입력 크기 등에 따라 달라지는 격자 (예: 상수 전파)
+즉 "각 프로그램 지점의 추상 상태를 격자 변수로 두고, 그 값들을 푼다". 강의 6 슬3의 `(Var→Sign)³`이 정확히 이것. 제약식과 고정점이 슬3.
 
 ---
 
-## Slide 3: 데이터흐름 제약과 고정점
+## 슬라이드 3: Dataflow Constraints and Fixed Points
 
+### 원문 내용
 > - For each node, we define a dataflow constraint that relates the variable to those of other nodes
 > - If all constraints are (in-) equations with monotone right-hand sides, we can use the fixed-point algorithm
 
-### 개념 설명
+### 번역
+> - 각 노드마다 **데이터플로우 제약식**을 정의 — 그 변수를 다른 노드 변수들과 연결
+> - 모든 제약이 **단조 우변을 가진 (부)등식**이면, **고정점 알고리즘**을 쓸 수 있다
 
-각 CFG 노드에 대해 제약(constraint)을 정의해요. 이 제약은 해당 노드의 추상 상태를 다른 노드들의 상태와 연결하는 방정식입니다.
+### 해설
 
-핵심은 이 제약들이 **단조 함수(monotone function)**의 형태여야 한다는 거예요:
-- 입력이 증가하면 출력도 증가하는 성질
-- 이 성질이 보장되면 고정점 알고리즘으로 해를 구할 수 있습니다.
+**개념 설명 — 제약 = 단조 방정식 = 고정점**
 
-### 배경 지식
-
-고정점(Fixed Point)은 f(x) = x를 만족하는 x를 의미해요. 최소 고정점(lfp - least fixed point)은 모든 고정점 중 가장 작은 것으로, 프로그램 분석에서 우리가 원하는 해입니다.
-
-### 전체적 맥락
-
-단조성이 중요한 이유는:
-- 보장된 수렴: 고정점에 반드시 도달합니다.
-- 유일성: 최소 고정점이 유일하게 결정됩니다.
-- 효율성: 고정점에 도달할 때까지의 반복 횟수가 제한돼요.
+각 노드의 제약식 `⟦v⟧ = (다른 노드 변수들의 함수)`가 강의 6의 `x=f(x)`를 이룹니다. **우변이 단조**이면(슬14) 고정점 알고리즘(강의 6 슬16)으로 풀 수 있습니다. 부등식이면 등식으로 변환(강의 6 슬19). 이 "단조 제약 → 고정점"이 데이터플로우의 핵심. 이 일반 틀이 단조 프레임워크(슬4).
 
 ---
 
-## Slide 4: 단조 프레임워크
+## 슬라이드 4: Monotone Framework
 
+### 원문 내용
 > - The combination of a complete lattice and a space of monotone functions
 > - Can be instantiated by specifying the CFG and the rules for assigning dataflow constraints
 
-### 개념 설명
+### 번역
+> - **단조 프레임워크(monotone framework)**: 완비 격자 + 단조 함수 공간의 조합
+> - CFG와 데이터플로우 제약 규칙을 지정해 **인스턴스화**할 수 있음
 
-단조 프레임워크(Monotone Framework)는 데이터흐름 분석의 일반적인 틀이에요:
+### 해설
 
-1. **격자**: 추상적 정보를 표현하는 수학적 구조
-2. **단조 함수**: 각 CFG 노드에 대한 전이 함수(transfer function)
+**개념 설명 — 단조 프레임워크 = 분석 제조 틀 ★**
 
-이 프레임워크를 특정 분석(부호 분석, 상수 전파 등)에 맞게 인스턴스화하면 돼요.
+**단조 프레임워크**(Kam-Ullman, 강의 5 슬7)는 분석을 찍어내는 **일반 틀**입니다. "완비 격자 + 단조 전이 함수"라는 빈 틀에, **격자와 제약 규칙만 채우면** 구체 분석이 됩니다:
+- 격자=Sign, 규칙=부호 전이 → **부호 분석**(슬5~18).
+- 격자=flat(ℤ) → **상수 전파**(슬19~22).
+- 격자=멱집합 → **도달 정의·사용 가능 식**(강의 8).
 
-### 배경 지식
-
-프레임워크의 강점은 일반성이에요:
-- 다양한 분석 기법을 통일된 방식으로 다룰 수 있습니다.
-- 수렴성, 안전성 등의 이론적 성질을 한 번에 증명할 수 있어요.
-
-### 전체적 맥락
-
-이 강의에서는 단조 프레임워크 내에서:
-- 부호 분석(Sign Analysis)
-- 상수 전파(Constant Propagation)
-
-을 살펴볼 거예요. 둘 다 같은 프레임워크를 기반으로 하지만, 다른 격자와 규칙을 사용합니다.
+즉 **하나의 틀로 수많은 분석**을 만듭니다. 강의 1 슬30의 "분석 설계 프레임워크"가 이것. 부호 분석으로 인스턴스화를 시작합니다(슬5~).
 
 ---
 
-## Slide 5: 문법
+## 슬라이드 5: Syntax
 
-> Node v ::= x=e | if x | entry | return
-> Expression e ::= x | n | input() | e op e
-> (No functions, pointers, and compound types for now)
+### 원문 내용
+> - Node v ::= x=e | if x | entry | return
+> - Expression e ::= x | n | input() | e op e
+> - (No functions, pointers, and compound types for now)
 
-### 개념 설명
+### 번역
+> - 노드: 대입(`x=e`)·조건(`if x`)·진입(entry)·반환(return)
+> - 식: 변수·정수·`input()`·이항 연산
+> - (지금은 함수·포인터·복합 타입 없음)
 
-강의에서 분석할 간단한 프로그래밍 언어의 문법이에요:
+### 해설
 
-**노드(Statement) 종류:**
-- `x=e`: 변수 x에 식 e의 값을 할당
-- `if x`: 변수 x의 값에 따라 분기
-- `entry`: 프로그램 시작점
-- `return`: 프로그램 종료점
+**개념 설명**
 
-**식(Expression) 종류:**
-- `x`: 변수
-- `n`: 정수 상수
-- `input()`: 외부 입력 (값을 모르므로 추상화)
-- `e op e`: 이항 연산 (덧셈, 뺄셈 등)
-
-### 배경 지식
-
-이렇게 간단한 언어를 사용하는 이유:
-- 핵심 개념에 집중할 수 있어요
-- 함수, 포인터, 복합 타입은 분석을 크게 복잡하게 만드니까요
-
-### 전체적 맥락
-
-실제 프로그램 분석은 이보다 훨씬 복잡한 언어를 다루지만, 원리는 같습니다:
-1. 복잡한 구조를 단순하게 모델링
-2. 필수적인 정보만 추상화
-3. 같은 분석 기법을 적용
+분석 대상 미니 언어. CFG 노드는 대입·조건·진입·반환 네 종류. 강의 2의 MIR을 단순화한 것(함수·포인터는 강의 10·14에서). 이 위에 부호 분석을 정의합니다(슬6~). 격자가 슬6.
 
 ---
 
-## Slide 6: 부호 분석 - 격자
+## 슬라이드 6: Sign Analysis — Lattice
 
-> ⟦v⟧ ∈ State = Var → Sign
-> [Diamond-shaped Hasse diagram: ⊤ at top, -, 0, + in middle, ⊥ at bottom]
-> Stateⁿ expresses information for all CFG nodes, where n is the number of nodes
+### 원문 내용
+> (부호 격자 다이아몬드: ⊤ / −, 0, + / ⊥)
+> - ⟦v⟧ ∈ State = Var → Sign
+> - State^n expresses information for all CFG nodes, where n is the number of nodes
 
-### 개념 설명
+### 번역
+> - 부호 격자(강의 5): {⊥, −, 0, +, ⊤}
+> - 각 노드 상태 `⟦v⟧ ∈ State = Var → Sign` (변수→부호, 맵 격자)
+> - **State^n**이 모든 CFG 노드의 정보(n=노드 수)
 
-부호 분석(Sign Analysis)은 변수가 음수, 0, 양수 중 어느 범위에 있는지 추적하는 분석이에요.
+### 해설
 
-**Sign 격자:**
-```
-     ⊤ (unknown/anything)
-   /   |   \
-  -    0    +  (negative, zero, positive)
-   \   |   /
-     ⊥ (impossible/bottom)
-```
+**개념 설명**
 
-**State의 정의:**
-- `State = Var → Sign`: 각 변수가 어떤 부호를 가지는지 매핑
-- 예: {a → +, b → -, c → ⊤}는 a는 양수, b는 음수, c는 부호를 알 수 없음을 의미해요
-
-**Stateⁿ:**
-- n개의 CFG 노드 각각에 대해 State를 할당한 것
-- 전체 프로그램의 추상적 상태를 표현합니다.
-
-### 배경 지식
-
-격자의 순서 관계(≤)는:
-- ⊥ ≤ -, 0, +, ⊤ (⊥는 가장 작은 원소)
-- -, 0, + ≤ ⊤ (⊤는 가장 큰 원소)
-- -, 0, + 사이에는 비교 불가능
-
-이 순서는 정보의 정확성을 나타내요: ⊤은 가장 정보가 적고, -, 0, +는 더 정확해요.
-
-### 전체적 맥락
-
-부호 분석의 용도:
-- 0으로 나누기 검출: 나누는 수가 0 또는 ⊤이면 경고
-- 경고가 너무 많아서 실무에서는 더 정교한 분석이 필요해요
+강의 5의 부호 격자(flat)와 맵 격자(`Var→Sign`)를 그대로 씁니다. 한 노드 상태는 "각 변수의 부호", 전체는 그 곱 `State^n`(강의 5 슬30, 강의 6 슬6과 동일). 노드 간 정보를 합치는 JOIN이 슬7.
 
 ---
 
-## Slide 7: 부호 분석 - JOIN 연산
+## 슬라이드 7: Sign Analysis — JOIN
 
-> - JOIN(v) combines the abstract states from the predecessors of v:
->   JOIN(v) = ⊔_{u∈pred(v)} ⟦u⟧
-> - Precisely speaking, JOIN(v) is a function
->   JOIN(v) : Stateⁿ → State
->   JOIN(v)(⟦v₁⟧, ..., ⟦vₙ⟧) = ⟦vᵢ⟧ ⊔ ⟦vⱼ⟧ ⊔ ···
+### 원문 내용
+> - JOIN(v) combines the abstract states from the predecessors of v: JOIN(v) = ⨆_{u∈pred(v)} ⟦u⟧
+> - Precisely speaking, JOIN(v) is a function: JOIN(v) : State^n → State; JOIN(v)(⟦v1⟧, ..., ⟦vn⟧) = ⟦vi⟧ ⊔ ⟦vj⟧ ⊔ ...
 
-### 개념 설명
+### 번역
+> - **JOIN(v)**: v의 **선행자(predecessor)들의 추상 상태를 합침(⊔)**: `JOIN(v) = ⨆_{u∈pred(v)} ⟦u⟧`
+> - 엄밀히는 전체 상태를 받아 v의 합류 상태를 주는 함수
 
-JOIN 연산은 여러 경로에서 노드 v에 도달할 때 이들 경로의 추상 상태를 합치는 작업이에요.
+### 해설
 
-**직관적 의미:**
-- 노드 v의 이전 노드들(pred(v)) 모두로부터의 상태를 병합
-- ⊔(join) 연산은 두 원소를 모두 포함하는 가장 작은 원소를 찾아요
+**개념 설명 — JOIN = 선행자 합치기 (전방 분석) ★**
 
-**수학적 정의:**
-```
-JOIN(v) : Stateⁿ → State
-JOIN(v)(state) = ⊔(⟦u⟧ | u ∈ pred(v))
-```
-
-### 배경 지식
-
-JOIN이 필요한 이유:
-- 제어 흐름 그래프에는 분기와 합병이 있어요
-- 합병점에서 여러 경로가 만날 때, 모든 경로를 고려해야 안전합니다
-
-### 배경 예시
-
-```
-    if x
-    /  \
-   v₃  v₄
-    \  /
-     v₅
-```
-
-v₅에 도착하는 추상 상태는:
-- v₃에서의 상태와
-- v₄에서의 상태
-
-를 합쳐야 해요. 둘 다 가능하니까요.
+**JOIN(v)**는 "v로 들어오는 모든 경로의 정보를 합치는" 연산입니다 — v의 **선행자(predecessor)** 상태들을 **join(⊔)**으로 모읍니다(강의 5 슬16의 "분기 합류에서 lub"). 부호 분석은 **전방(forward)** 분석이라 선행자에서 정보가 흘러옵니다. 이것이 강의 18 슬7의 CJOIN(구체 버전), 강의 12·15의 JOIN과 같은 연산. 예가 슬8.
 
 ---
 
-## Slide 8: 부호 분석 - JOIN 예시
+## 슬라이드 8: Sign Analysis — JOIN Example
 
-> [CFG diagram with v₁: entry, v₂: if x, v₃: y=z, v₄: y=-5, v₅: return]
-> - JOIN(v₁) = ⊥
-> - JOIN(v₂) = ⟦v₁⟧
-> - JOIN(v₃) = ⟦v₂⟧
-> - JOIN(v₄) = ⟦v₂⟧
-> - JOIN(v₅) = ⟦v₃⟧ ⊔ ⟦v₄⟧
+### 원문 내용
+> (CFG: v1 entry → v2 if x → [T] v3 y=z, [F] v4 y=−5 → v5 return)
+> - JOIN(v1) = ⊥
+> - JOIN(v2) = ⟦v1⟧
+> - JOIN(v3) = ⟦v2⟧
+> - JOIN(v4) = ⟦v2⟧
+> - JOIN(v5) = ⟦v3⟧ ⊔ ⟦v4⟧
 
-### 개념 설명
+### 번역
+> 분기 CFG에서 각 노드의 JOIN: 진입은 ⊥(선행자 없음), 단일 선행자 노드는 그 선행자 상태, **합류 노드 v5는 두 분기(v3, v4)를 ⊔로 합침**.
 
-구체적인 CFG에서 JOIN의 계산을 보여줘요:
+### 해설
 
-```
-v₁: entry
-  ↓
-v₂: if x
-  / \
-v₃:   v₄:
-y=z   y=-5
-  \ /
-v₅: return
-```
+**개념 설명**
 
-**각 노드의 JOIN 값:**
-
-| 노드 | 이전 노드 | JOIN 값 | 설명 |
-|------|---------|--------|------|
-| v₁ | 없음 | ⊥ | 시작점이므로 불가능한 상태(bottom) |
-| v₂ | v₁ | ⟦v₁⟧ | v₁에서만 올 수 있음 |
-| v₃ | v₂ | ⟦v₂⟧ | v₂의 첫 번째 분기 |
-| v₄ | v₂ | ⟦v₂⟧ | v₂의 두 번째 분기 |
-| v₅ | v₃, v₄ | ⟦v₃⟧ ⊔ ⟦v₄⟧ | v₃과 v₄ 둘 다에서 올 수 있음 |
-
-### 전체적 맥락
-
-v₅에서의 JOIN이 중요해요:
-- y의 값이 v₃을 거쳐 올 수도, v₄를 거쳐 올 수도 있어요
-- 따라서 두 경로의 상태를 합쳐야 안전합니다
+JOIN 계산 예. v5는 then(v3)·else(v4) 두 경로가 합류하므로 `⟦v3⟧⊔⟦v4⟧` — 양쪽 정보를 안전하게 합침(강의 5 슬5의 c=⊤). 진입 v1은 선행자가 없어 ⊥(이후 entry 규칙으로 ⊤, 슬11). 단일 선행자는 그대로 전달. JOIN 후 각 노드의 전이가 슬9.
 
 ---
 
-## Slide 9: 부호 분석 - 제약 규칙
+## 슬라이드 9: Sign Analysis — Constraint Rules
 
+### 원문 내용
 > - x=e: ⟦v⟧ = JOIN(v)[x ↦ eval(JOIN(v), e)]
 > - eval : (Var → Sign) × Expression → Sign
->   - eval(σ, x) = σ(x)
->   - eval(σ, n) = sign(n)
->   - eval(σ, input()) = ⊤
->   - eval(σ, e₁ op e₂) = ôp(eval(σ, e₁), eval(σ, e₂))
+>   - eval(σ, x) = σ(x); eval(σ, n) = sign(n); eval(σ, input()) = ⊤; eval(σ, e1 op e2) = op̂(eval(σ,e1), eval(σ,e2))
 
-### 개념 설명
+### 번역
+> - **대입 `x=e`**: `⟦v⟧ = JOIN(v)에서 x를 eval 결과로 갱신` (`JOIN(v)[x↦eval(JOIN(v),e)]`)
+> - **eval**(식의 추상 평가): 변수→그 부호, 정수→sign(n), `input()`→⊤(모름), 이항 연산→추상 연산자 op̂
 
-각 노드 타입에 대한 제약을 정의하는 규칙이에요.
+### 해설
 
-**할당문 x=e의 규칙:**
-```
-⟦v⟧ = JOIN(v)[x ↦ eval(JOIN(v), e)]
-```
+**개념 설명 — 전이 함수: JOIN 후 갱신 ★**
 
-의미: 노드 v에서 x에 e를 할당하면,
-1. JOIN(v)로 이전 상태를 구하고
-2. e를 평가(eval)해서
-3. x의 값을 업데이트
-
-**eval 함수 정의:**
-
-| 식 | 결과 | 설명 |
-|----|------|------|
-| eval(σ, x) | σ(x) | 변수의 부호는 σ에서 조회 |
-| eval(σ, n) | sign(n) | 상수의 부호 (양수면 +, 0이면 0, 음수면 -) |
-| eval(σ, input()) | ⊤ | 입력값은 부호를 모르므로 ⊤ |
-| eval(σ, e₁ op e₂) | ôp(...) | 연산의 추상적 결과 |
-
-### 배경 지식
-
-상태 업데이트 표기: σ[x ↦ v]는 σ의 복사본인데 x의 값만 v로 바꾼 거예요.
+대입 노드의 전이: **① 선행자 정보를 JOIN으로 합치고 → ② 그 상태에서 식 e를 평가(eval)해 → ③ x를 그 값으로 갱신**. `eval`은 식의 부호를 계산(변수는 현재 부호, 상수는 그 부호, input은 ⊤). 이항 연산은 **추상 연산자 op̂**(슬10). 이 "JOIN → eval → 갱신" 패턴이 강의 18 슬8의 구체 전이, Assignment 4의 transfer_stmt와 동일 구조. 추상 덧셈표가 슬10.
 
 ---
 
-## Slide 10: 부호 분석 - 추상적 덧셈
+## 슬라이드 10: Sign Analysis — Abstract Addition
 
-> [5×5 table for abstract addition ˆ+]
-> ˆ+  | ⊥  -  0  +  ⊤
-> ⊥   | ⊥  ⊥  ⊥  ⊥  ⊥
-> -   | ⊥  -  -  ⊤  ⊤
-> 0   | ⊥  -  0  +  ⊤
-> +   | ⊥  ⊤  +  +  ⊤
-> ⊤   | ⊥  ⊤  ⊤  ⊤  ⊤
+### 원문 내용
+> (덧셈표 +̂: 행·열이 ⊥,−,0,+,⊤)
+> - ⊥ +̂ x = ⊥ (모두)
+> - − +̂ − = −, − +̂ 0 = −, − +̂ + = ⊤, − +̂ ⊤ = ⊤
+> - 0 +̂ x = x
+> - + +̂ + = +, + +̂ − = ⊤
+> - ⊤ +̂ x = ⊤ (단 ⊥ 제외)
 
-### 개념 설명
+### 번역
+> **추상 덧셈 +̂** 표: ⊥은 흡수(⊥+x=⊥), 0은 항등(0+x=x), 같은 부호 덧셈은 그 부호(−+−=−), **다른 부호(+와 −)는 ⊤**(미정), ⊤은 전파.
 
-부호의 덧셈을 추상적으로 정의한 표예요. 각 칸은 두 부호의 합의 부호 범위를 나타내요.
+### 해설
 
-**몇 가지 중요한 경우:**
+**개념 설명 — 추상 연산자 ★**
 
-- `- + - = -`: 음수 + 음수 = 항상 음수 ✓
-- `+ + + = +`: 양수 + 양수 = 항상 양수 ✓
-- `- + + = ⊤`: 음수 + 양수 = 음수일 수도, 양수일 수도, 0일 수도 (어느 쪽이 더 큰지 모르니까)
-- `⊥ + anything = ⊥`: 불가능한 값과의 연산도 불가능
+추상 덧셈 `+̂`는 부호끼리의 덧셈 결과를 정의합니다. 핵심:
+- `0 +̂ x = x`(0은 항등), 같은 부호는 유지(`+ +̂ + = +`),
+- **`+ +̂ − = ⊤`**(양수+음수는 부호 미정 — 강의 19 문제 19-2의 그 건전성),
+- `⊥`(불가능)은 흡수.
 
-### 배경 지식
-
-이 표는 **안전성(soundness)**을 보장하기 위해 설계돼요:
-- 실제 가능한 결과를 모두 포함하되,
-- 불가능한 결과도 포함할 수 있어요 (과근사, over-approximation)
-
-예: `- + +`의 결과가 항상 ⊤는 아니지만, ⊤로 표현하면 안전해요.
-
-### 예시
-
-```
-a = -3, b = 5
-a + b = 2 (양수)
-하지만 a + b가 음수 또는 양수일 수 있으므로 ⊤로 표현
-```
+이 표가 **건전한 추상 연산**(강의 19 슬7의 `+̂` 건전성 조건을 만족)이어야 분석이 건전합니다. 강의 18 슬18의 부호 덧셈표와 동일. 나머지 규칙이 슬11.
 
 ---
 
-## Slide 11: 부호 분석 - 나머지 규칙
+## 슬라이드 11: Sign Analysis — Remaining Rules
 
+### 원문 내용
 > - entry: ⟦v⟧ = ⊤
 > - Others: ⟦v⟧ = JOIN(v)
-> - While ⊓ exists, we only use ⊔. This is common.
+> - While ⊓ exists, we only use ⊔ (This is common)
 
-### 개념 설명
+### 번역
+> - **진입(entry)**: `⟦v⟧ = ⊤` (모든 변수 부호 미정 — 아무 입력이나 가능)
+> - **그 외 노드**(if·return 등): `⟦v⟧ = JOIN(v)` (그냥 합류)
+> - meet(⊓)도 있지만 **join(⊔)만** 사용 (흔한 경우)
 
-다른 노드 타입들에 대한 규칙이에요:
+### 해설
 
-**entry 노드:**
-```
-⟦entry⟧ = ⊤
-```
-의미: 프로그램 시작점에서 변수들의 부호는 완전히 미결정 (⊤)
+**개념 설명**
 
-**if x, return 등 다른 노드:**
-```
-⟦v⟧ = JOIN(v)
-```
-의미: 변수 할당이 없으므로 상태는 그대로 전파
-
-### 배경 지식
-
-**왜 ⊓(meet)를 사용하지 않을까?**
-
-격자 이론에서:
-- ⊔는 최소상한(supremum) - 여러 원소를 포함하는 가장 작은 원소
-- ⊓은 최대하한(infimum) - 여러 원소에 포함되는 가장 큰 원소
-
-앞쪽 분석(forward analysis)에서는 ⊔만 필요해요:
-- 여러 경로의 정보를 합칠 때 가능성을 모두 포함해야 하니까요
-
-### 전체적 맥락
-
-뒤쪽 분석(backward analysis - 예: 사용 가능성 분석)에서는 ⊓을 사용합니다.
+나머지 노드 규칙: **진입은 ⊤**(시작 시 모든 변수가 임의값 가능 — 강의 18 슬14의 진입 규칙), 그 외는 JOIN만(대입 아닌 노드는 상태를 안 바꿈). "join만 쓴다"는 데이터플로우의 흔한 특징 — 정보를 합치기만(전방 may 분석). 전체 예가 슬12~13.
 
 ---
 
-## Slide 12: 부호 분석 - 제약 예시 (코드)
+## 슬라이드 12~13: Sign Analysis — Constraint Example
 
-> [Code: a=42; b=87; if x { c=a+b; } else { c=a-b; } return;]
-> [CFG: v₁:entry → v₂:a=42 → v₃:b=87 → v₄:if x → v₅:c=a+b / v₆:c=a-b → v₇:return]
+### 원문 내용
+> ```c
+> a = 42; b = 87;
+> if x { c = a + b; } else { c = a - b; }
+> return;
+> ```
+> Constraints (CFG v1~v7):
+> - ⟦v1⟧ = ⊤
+> - ⟦v2⟧ = ⟦v1⟧[a ↦ +]
+> - ⟦v3⟧ = ⟦v2⟧[b ↦ +]
+> - ⟦v4⟧ = ⟦v3⟧
+> - ⟦v5⟧ = ⟦v4⟧[c ↦ +̂(⟦v4⟧(a), ⟦v4⟧(b))]
+> - ⟦v6⟧ = ⟦v4⟧[c ↦ −̂(⟦v4⟧(a), ⟦v4⟧(b))]
+> - ⟦v7⟧ = ⟦v5⟧ ⊔ ⟦v6⟧
 
-### 개념 설명
+### 번역
+> 강의 5 슬5의 코드를 CFG·제약식으로. 각 노드가 이전 상태에서 그 줄의 효과를 적용(a=42→a↦+, c=a+b→c↦+̂(...)), 합류 v7은 두 분기를 ⊔.
 
-구체적인 코드에서 CFG와 제약을 구성하는 과정을 보여줘요.
+### 해설
 
-**원본 코드:**
-```
-a = 42;
-b = 87;
-if x {
-  c = a + b;
-} else {
-  c = a - b;
-}
-return;
-```
+**개념 설명 — 분석의 전체 제약 시스템**
 
-**CFG 구조:**
-```
-v₁: entry
-  ↓
-v₂: a=42
-  ↓
-v₃: b=87
-  ↓
-v₄: if x
-  / \
-v₅:  v₆:
-c=a+b c=a-b
-  \ /
-v₇: return
-```
-
-### 배경 지식
-
-각 노드는 제어 흐름에서 특별한 점을 나타내요:
-- **entry**: 프로그램 시작
-- **return**: 프로그램 종료
-- **분기점**: if 문에서 경로가 나뉘는 곳
-- **합병점**: 경로가 다시 만나는 곳 (v₇)
-
-### 전체적 맥락
-
-이 예시에서 특히 중요한 부분은 v₇이에요:
-- v₅와 v₆에서 서로 다른 c 값을 가지고 도착해요
-- 따라서 JOIN으로 합쳐야 해요
+강의 5~6의 예제를 완전한 데이터플로우 제약으로 적었습니다. 각 노드 제약이 강의 6 슬6의 함수 f를 이루고, 고정점이 분석 결과. v7에서 `⟦v5⟧⊔⟦v6⟧`로 then(c=+)·else(c=⊤, 양수−양수) 합류 → c=⊤(강의 5 슬5와 일치). 이 제약을 고정점으로 풉니다(슬16). 그 전에 단조성 확인(슬14).
 
 ---
 
-## Slide 13: 부호 분석 - 제약 예시 (제약식)
+## 슬라이드 14: Monotonicity
 
-> ⟦v₁⟧ = ⊤
-> ⟦v₂⟧ = ⟦v₁⟧[a ↦ +]
-> ⟦v₃⟧ = ⟦v₂⟧[b ↦ +]
-> ⟦v₄⟧ = ⟦v₃⟧
-> ⟦v₅⟧ = ⟦v₄⟧[c ↦ ˆ+(⟦v₄⟧(a), ⟦v₄⟧(b))]
-> ⟦v₆⟧ = ⟦v₄⟧[c ↦ ˆ-(⟦v₄⟧(a), ⟦v₄⟧(b))]
-> ⟦v₇⟧ = ⟦v₅⟧ ⊔ ⟦v₆⟧
-
-### 개념 설명
-
-이전 CFG에 대한 구체적인 제약식이에요. 각 변수의 값을 단계별로 추적해요.
-
-**제약식 해석:**
-
-| 제약식 | 의미 |
-|--------|------|
-| ⟦v₁⟧ = ⊤ | entry이므로 모든 변수가 ⊤ |
-| ⟦v₂⟧ = ⟦v₁⟧[a ↦ +] | v₁의 상태에서 a만 +(양수)로 업데이트 (42는 양수) |
-| ⟦v₃⟧ = ⟦v₂⟧[b ↦ +] | v₂의 상태에서 b만 +(양수)로 업데이트 (87은 양수) |
-| ⟦v₄⟧ = ⟦v₃⟧ | if 문은 할당이 없으므로 상태 유지 |
-| ⟦v₅⟧ = ⟦v₄⟧[c ↦ ˆ+(⟦v₄⟧(a), ⟦v₄⟧(b))] | c = a + b를 계산: (+) ˆ+ (+) = (+) |
-| ⟦v₆⟧ = ⟦v₄⟧[c ↦ ˆ-(⟦v₄⟧(a), ⟦v₄⟧(b))] | c = a - b를 계산: (+) ˆ- (+) = ⊤ |
-| ⟦v₇⟧ = ⟦v₅⟧ ⊔ ⟦v₆⟧ | v₅와 v₆의 상태를 합침 |
-
-### 배경 지식
-
-구체적으로 계산하면:
-- v₅에서: a=+, b=+, c=+
-- v₆에서: a=+, b=+, c=⊤
-- v₇에서: a=+, b=+, c=⊤ (두 경로의 c가 다르므로 ⊤으로 합침)
-
-### 예시 분석
-
-```
-실제 값:
-v₂: a=42 (양수)
-v₃: a=42, b=87
-v₅: a=42, b=87, c=129 (양수)
-v₆: a=42, b=87, c=-45 (음수)
-v₇: a=42, b=87, c는 129 또는 -45
-
-추상 값:
-v₇: a=+, b=+, c=⊤ (정확히 모든 가능성을 포함)
-```
-
----
-
-## Slide 14: 단조성
-
+### 원문 내용
 > - Function composition preserves monotonicity
 > - ⊔ is monotone
 > - Map update is monotone
-> - ôp is monotone
+> - op̂ is monotone
 > - eval(_, e) : (Var → Sign) → Sign is monotone for every e
 
-### 개념 설명
+### 번역
+> 단조성 확인: 합성·⊔·맵 갱신·추상 연산자 op̂가 모두 단조(강의 6 슬9~10) → 따라서 **eval과 전체 전이 함수가 단조**.
 
-부호 분석의 모든 연산이 단조 함수(monotone function)임을 증명하는 슬라이드예요.
+### 해설
 
-**단조 함수의 정의:**
-```
-f가 단조함수 ⟺ x ≤ y이면 f(x) ≤ f(y)
-```
+**개념 설명 — 전이 함수가 단조임을 조각별로 ★**
 
-**부호 분석에서의 단조성:**
-
-1. **함수 합성의 단조성**: f와 g가 단조이면 f ∘ g도 단조
-2. **⊔의 단조성**: x ≤ x'이고 y ≤ y'이면 x ⊔ y ≤ x' ⊔ y'
-3. **맵 업데이트의 단조성**: x ≤ y이면 x[a ↦ v] ≤ y[a ↦ v]
-4. **추상 연산의 단조성**: ôp가 단조함수 (Slide 10의 표를 보면 확인 가능)
-5. **eval의 단조성**: eval(σ, e)는 σ에 대해 단조
-
-### 배경 지식
-
-**왜 단조성이 중요한가:**
-
-고정점 정리(Knaster-Tarski Fixed Point Theorem):
-- f : L → L가 단조함수이고 L이 완전 격자이면,
-- f의 최소 고정점이 존재하고 유일해요.
-
-### 전체적 맥락
-
-이 정리 덕분에:
-- 고정점 알고리즘이 항상 종료돼요 (격자의 높이가 유한하므로)
-- 결과가 유일해요
-- 우리의 분석 결과가 정확해요
+강의 6 슬9~10의 단조성 성질로, 전이 함수의 단조성을 **조각별로** 확인합니다: ⊔·맵 갱신·op̂·합성이 모두 단조이므로, 이들로 만든 eval과 전체 f가 단조. 단조성이 확보되어 **Tarski(lfp 존재)·Kleene(반복 계산)** 적용 가능(강의 6). 핵심 조각 op̂의 단조성이 슬15.
 
 ---
 
-## Slide 15: 덧셈의 단조성
+## 슬라이드 15: Monotonicity of Addition
 
-> [Same 5×5 table as slide 10, showing monotonicity verification]
+### 원문 내용
+> (슬10과 같은 +̂ 표 재게시, 단조성 확인용)
 
-### 개념 설명
+### 번역
+> 추상 덧셈표를 다시 보며 `+̂`가 단조임을 확인: 어느 인자가 격자에서 올라가도(예: 0→+) 결과가 내려가지 않음.
 
-Slide 10의 추상 덧셈 표가 실제로 단조인지 검증하는 과정이에요.
+### 해설
 
-**단조성 확인:**
+**개념 설명**
 
-ˆ+이 단조라는 것은: a ≤ a'이고 b ≤ b'이면 a ˆ+ b ≤ a' ˆ+ b'
-
-**표에서 확인:**
-
-| 경우 | 확인 |
-|------|------|
-| ⊥ ≤ anything | ⊥ ˆ+ b = ⊥ ≤ a' ˆ+ b' ✓ |
-| - ≤ + | - ˆ+ 0 = - ≤ + ˆ+ 0 = + ✓ |
-| - ≤ ⊤ | - ˆ+ b ≤ ⊤ ˆ+ b ✓ (모든 b에 대해) |
-
-### 배경 지식
-
-표를 자세히 보면:
-- 오른쪽으로 갈수록 큰 수를 더할수록 결과가 증가하거나 같아요
-- 아래로 갈수록 작은 수를 더할수록 결과가 증가하거나 같아요
-- 이것이 단조성의 정의입니다.
-
-### 전체적 맥락
-
-모든 추상 연산(뺄셈, 곱셈 등)도 마찬가지로 단조여야 해요:
-- 그렇지 않으면 고정점에 도달하지 않을 수 있어요
-- 따라서 분석 설계 시 단조성 검증이 중요합니다.
+`+̂`가 단조임을 표로 확인합니다. 단조 = "입력이 ⊑로 커지면 결과도 ⊑로 커지거나 같다". 예: `+ +̂ 0 = +`이고 `+ +̂ + = +`, `+ +̂ ⊤ = ⊤`(0⊑+⊑⊤이고 결과 +⊑+⊑⊤). 표의 각 행·열이 위로 갈수록 결과도 위로 → 단조. 이로써 분석 건전성·종료의 전제가 갖춰집니다. 풀이가 슬16.
 
 ---
 
-## Slide 16: 제약 해결
+## 슬라이드 16: Solving Constraints
 
-> f : Stateⁿ → Stateⁿ
-> f(⟦v₁⟧, ..., ⟦vₙ⟧) = (f₁(⟦v₁⟧), ..., fₙ(⟦vₙ⟧))
-> We can compute lfp(f) using:
-> NaiveFixedPointAlgorithm(f):
->   x ← ⊥
->   while x ≠ f(x) do
->     x ← f(x)
->   return x
+### 원문 내용
+> - f : State^n → State^n; f(⟦v1⟧, ..., ⟦vn⟧) = (f1(⟦v1⟧), ..., fn(⟦vn⟧))
+> - We can compute lfp(f) using NaiveFixedPointAlgorithm: x←⊥; while x≠f(x): x←f(x); return x
 
-### 개념 설명
+### 번역
+> 제약을 함수 f로 묶고(강의 6 슬6), **단순 고정점 알고리즘**(⊥에서 f 반복)으로 lfp 계산.
 
-모든 제약을 하나의 함수 f : Stateⁿ → Stateⁿ로 표현해요.
+### 해설
 
-**함수의 구성:**
-```
-f(x₁, ..., xₙ) = (f₁(x₁,...,xₙ), ..., fₙ(x₁,...,xₙ))
-```
+**개념 설명**
 
-각 fᵢ는 노드 i의 제약 규칙이에요.
-
-**소박한 고정점 알고리즘:**
-
-```python
-def NaiveFixedPointAlgorithm(f):
-    x = ⊥  # 모든 변수를 ⊥로 초기화
-    while x ≠ f(x):  # 고정점에 도달할 때까지
-        x = f(x)     # 한 번 전이
-    return x
-```
-
-### 배경 지식
-
-**수렴성 증명:**
-
-f가 단조이고 L이 유한 높이의 격자라면:
-- 수열 ⊥ ≤ f(⊥) ≤ f²(⊥) ≤ ... ≤ lfp(f)
-- 이 수열은 엄격히 증가하므로 반드시 수렴해요
-
-### 전체적 맥락
-
-시간 복잡도는 O(n · h · k):
-- n: CFG 노드 수
-- h: 격자의 높이 (⊥에서 ⊤까지의 최대 경로 길이)
-- k: 한 번 전이(f 계산)의 비용
-
-예: 부호 분석에서 Sign 격자의 높이는 3입니다 (⊥ → 중간 → ⊤).
+강의 6 슬16의 단순 고정점 알고리즘을 그대로 적용 — ⊥에서 f를 반복해 lfp(분석 결과)를 구합니다. 부호 분석이 강의 5~6의 이론 위에 완전히 올라섰습니다. 단 이 단순 알고리즘은 비효율적이라(슬23~) 워크리스트로 개선합니다. 먼저 정밀도 개선(슬17)·응용(슬18)을 봅니다.
 
 ---
 
-## Slide 17: 정밀도 - 개선된 부호 격자
+## 슬라이드 17: Precision — Refined Sign Lattice
 
-> - Adding abstract values can improve precision
->   - e.g., -/0, -/+, 0/+
-> [Extended Hasse diagram: ⊤ at top, -/0, -/+, 0/+ in middle layer, -, 0, + below, ⊥ at bottom]
+### 원문 내용
+> - Adding abstract values can improve precision (e.g., −/0, −/+, 0/+)
+> (확장 부호 격자: ⊤ / −/0, −/+, 0/+ / −, 0, + / ⊥)
 
-### 개념 설명
+### 번역
+> - 추상값을 추가하면 **정밀도 향상**: `−/0`(음수 또는 0), `−/+`(0 아님), `0/+`(양수 또는 0) 등 중간 값 추가 → 더 세밀한 격자
 
-원래 부호 격자의 정밀도를 높이기 위해 더 많은 추상 값을 추가할 수 있어요.
+### 해설
 
-**개선된 격자:**
+**개념 설명 — 도메인을 키워 정밀도 ↑**
 
-```
-      ⊤
-   / | \
-  -/0 -/+ 0/+
-    \ | /
-   -  0  +
-     \ | /
-       ⊥
-```
-
-새로운 원소들:
-- `-/0`: 음수 또는 0
-- `-/+`: 음수 또는 양수 (0은 아님)
-- `0/+`: 0 또는 양수
-
-### 배경 지식
-
-이들 값은 특정 부호 조합만 가능할 때 유용해요:
-
-**예:**
-```python
-x = 0
-if (x > 0):  # 거짓, x는 양수가 될 수 없음
-    c = x + 10
-else:        # 참, x는 음수 또는 0
-    c = x - 10
-```
-
-여기서 c의 값:
-- 원래 부호 격자: ⊤ (정밀도 낮음)
-- 개선된 격자: `-/0` (더 정확)
-
-### 전체적 맥락
-
-정밀도를 높일수록:
-- 거짓 경보(false alarm)가 줄어들어요
-- 대신 격자의 높이가 증가해서 수렴에 더 오래 걸려요
-- 실무에서는 정밀도와 효율성의 균형을 맞춰야 합니다.
+기본 부호 격자는 `+ ⊔ 0 = ⊤`로 정보를 많이 잃습니다. **중간 추상값**(`0/+` = "0 또는 양수" = 비음수, `−/+` = "0 아님")을 추가하면 `+ ⊔ 0 = 0/+`로 더 정밀해집니다. 예: `0/+`이면 "0 이상"이라 0으로 나누기 검사에 유용. **도메인을 키우면 정밀↑ 비용↑**(강의 1 trade-off). 이는 강의 16의 구간·다면체로 가는 방향. 응용이 슬18.
 
 ---
 
-## Slide 18: 부호 분석의 응용
+## 슬라이드 18: Applications of Sign Analysis
 
-> - In theory, can detect division-by-zero errors
+### 원문 내용
+> - In theory, e.g., can detect division-by-zero errors
 >   - Identify division whose divisor is 0 or ⊤
 >   - Would have too many false alarms
-> - More powerful analysis techniques can be useful
->   - Interval domain
->   - Path sensitivity
+> - More powerful analysis techniques can be useful: Interval domain, Path sensitivity
 
-### 개념 설명
+### 번역
+> - 이론적으로 **0으로 나누기 오류 검출** 가능: 분모가 0이나 ⊤인 나눗셈을 잡음
+>   - 단 **헛경보가 너무 많음**(부호만으론 부정밀)
+> - 더 강력한 기법이 유용: **구간 도메인**(강의 9), **경로 민감(path sensitivity)**
 
-부호 분석의 실제 적용 가능성과 한계를 다루는 슬라이드예요.
+### 해설
 
-**0으로 나누기 검출:**
+**개념 설명**
 
-이론적으로는 부호 분석으로 나누는 수가 0 또는 ⊤일 때를 감지할 수 있어요:
-
-```python
-if (x == 0):
-    # 이 부분에서는 x가 0임을 알아야 함
-    y = a / x  # 에러 검출 가능
-```
-
-하지만 실제로는 거짓 경보가 많아요:
-
-```python
-x = input()  # x는 ⊤
-y = a / x    # 항상 경고 (실제로는 0이 아닐 수도)
-```
-
-### 배경 지식
-
-**더 강력한 기법들:**
-
-1. **구간 분석(Interval Domain)**: 변수가 [1, 100] 범위라는 식으로 정확한 범위 추적
-2. **경로 민감성(Path Sensitivity)**: if문의 조건을 고려해서 서로 다른 경로에 다른 정보 할당
-
-예:
-```python
-if (x > 0):    # 이 브랜치에서는 x > 0
-    y = 1 / x  # 안전
-else:
-    y = a / x  # x ≤ 0이므로 위험 가능
-```
-
-### 전체적 맥락
-
-부호 분석은 간단하지만 정확도가 낮아요. 실무에서는 더 복잡한 도메인과 기법이 필요합니다.
+부호 분석으로 0 나누기를 검사할 수 있지만(분모가 0/⊤이면 위험), 부호만으론 부정밀해 헛경보가 많습니다(강의 4의 false alarm). 더 정밀한 **구간 분석**(강의 9, 정확한 범위)이나 경로 민감 분석이 필요. 강의 1의 "정밀도가 중요"의 실례. 같은 틀에 다른 격자를 끼운 또 다른 분석이 슬19~22(상수 전파).
 
 ---
 
-## Slide 19: 상수 전파 - 격자
+## 슬라이드 19: Constant Propagation — Lattice
 
-> State = Var → flat(ℤ)
-> [Hasse diagram: ⊤ at top, ..., -2, -1, 0, 1, 2, ... in middle, ⊥ at bottom]
+### 원문 내용
+> - State = Var → flat(ℤ)
+> (flat 격자: ⊤ / ..., −2, −1, 0, 1, 2, ... / ⊥)
 
-### 개념 설명
+### 번역
+> - **상수 전파(constant propagation)**: 상태 = `Var → flat(ℤ)`
+> - flat 격자: 가운데 모든 정수, 위 ⊤(상수 아님), 아래 ⊥(값 없음)
 
-상수 전파(Constant Propagation)는 변수의 정확한 정수 값을 추적하는 분석이에요.
+### 해설
 
-**flat(ℤ) 격자:**
+**개념 설명 — 같은 틀, 다른 격자 ★**
 
-```
-        ⊤ (unknown)
-       / | | | \
-    -2 -1 0 1 2  ... (모든 정수)
-       \ | | | /
-        ⊥ (impossible)
-```
-
-**특징:**
-- ⊥는 불가능한 상태
-- 각 정수 n은 변수가 정확히 n이라는 뜻
-- ⊤는 정확한 값을 모를 때
-
-### 배경 지식
-
-이를 **평탄 격자(flat lattice)**라고 불러요:
-- 최소 원소: ⊥
-- 최대 원소: ⊤
-- 중간 원소들: 모두 비교 불가능
-- 높이: 2 (⊥에서 ⊤까지 최대 2단계)
-
-부호 격자와 달리:
-- 정수값 자체를 추적하므로 훨씬 정확해요
-- 하지만 입력값이 불확실하면 빠르게 ⊤가 돼요
-
-### 전체적 맥락
-
-컴파일러 최적화에서 매우 유용해요:
-```python
-x = 5
-y = x * 2   # y가 항상 10이므로 컴파일 타임에 계산 가능
-```
+**상수 전파**는 "각 변수가 **상수**인가, 상수면 몇인가"를 추적합니다. 격자는 `flat(ℤ)`(강의 5 슬26) — 각 정수가 별개 추상값, ⊤(상수 아님/여러 값), ⊥(미정). 부호 분석과 **완전히 같은 프레임워크**(JOIN·전이·고정점)에 **격자만 flat(ℤ)로 교체**한 것입니다. 이것이 단조 프레임워크의 위력(슬4). 규칙이 슬20.
 
 ---
 
-## Slide 20: 상수 전파 - 제약 규칙
+## 슬라이드 20: Constant Propagation — Constraint Rules
 
+### 원문 내용
 > - x=e: ⟦v⟧ = JOIN(v)[x ↦ eval(JOIN(v), e)]
-> - entry: ⟦v⟧ = ⊤
-> - Others: ⟦v⟧ = JOIN(v)
-> - eval : (Var → Flat(ℤ)) × Expression → Flat(ℤ)
->   - eval(σ, x) = σ(x)
->   - eval(σ, n) = n
->   - eval(σ, input()) = ⊤
->   - eval(σ, e₁ op e₂) = ôp(eval(σ, e₁), eval(σ, e₂))
+> - entry: ⟦v⟧ = ⊤; Others: ⟦v⟧ = JOIN(v)
+> - eval: eval(σ,x)=σ(x); eval(σ,n)=n; eval(σ,input())=⊤; eval(σ,e1 op e2)=op̂(...)
 
-### 개념 설명
+### 번역
+> 제약 규칙이 **부호 분석과 글자 그대로 같음** — JOIN·eval·갱신 구조 동일. 차이는 eval(σ,n)=n(정수 그대로, 부호 아님)과 op̂의 정의(슬21).
 
-상수 전파의 제약 규칙은 부호 분석과 거의 같아요. 다른 점은 eval 함수뿐이에요.
+### 해설
 
-**제약 규칙:**
+**개념 설명**
 
-부호 분석과 동일:
-- `x=e`: 할당 규칙
-- `entry`: ⊤로 초기화
-- 기타: JOIN만 적용
-
-**eval 함수 (핵심 차이):**
-
-| 식 | 결과 | 설명 |
-|----|------|------|
-| eval(σ, x) | σ(x) | 변수의 값을 그대로 조회 |
-| eval(σ, n) | n | 상수는 그 값 자체 |
-| eval(σ, input()) | ⊤ | 입력은 미지수 |
-| eval(σ, e₁ op e₂) | ôp(...) | 연산 결과 계산 |
-
-### 배경 지식
-
-**join(v)의 결과:**
-
-```
-join({5, 10}) = ⊤  // 다른 값이므로 합칠 수 없음
-join({5, 5}) = 5   // 같은 값이므로 5 유지
-```
-
-### 전체적 맥락
-
-상수 전파의 한계:
-```python
-if x:
-    a = 1
-else:
-    a = 2
-# a는 ⊤ (1 또는 2, 정확히 알 수 없음)
-```
+상수 전파의 제약 규칙이 부호 분석(슬9·11)과 **동일한 형태**입니다 — `JOIN→eval→갱신`. 바뀐 건 격자(flat(ℤ))와 그에 맞는 eval/op̂뿐. **프레임워크 재사용**의 명확한 예. 추상 연산자가 슬21.
 
 ---
 
-## Slide 21: 상수 전파 - 추상 연산자
+## 슬라이드 21: Constant Propagation — Abstract Operator
 
-> a ôp b = { ⊥ if a=⊥ or b=⊥; ⊤ otherwise, if a=⊤ or b=⊤; a op b otherwise }
+### 원문 내용
+> - a op̂ b = ⊥ if a=⊥ or b=⊥; ⊤ otherwise if a=⊤ or b=⊤; a op b otherwise
 
-### 개념 설명
+### 번역
+> **추상 연산자 op̂**: 한쪽이 ⊥이면 ⊥; 한쪽이 ⊤(상수 아님)이면 ⊤; **둘 다 구체 상수면 실제로 연산**(`a op b`).
 
-상수 전파에서의 추상 연산 정의예요.
+### 해설
 
-**규칙:**
+**개념 설명**
 
-```
-a ôp b를 계산할 때:
-1. a=⊥ 또는 b=⊥이면 → ⊥ (불가능한 값과의 연산은 불가능)
-2. a=⊤ 또는 b=⊤이면 → ⊤ (미지수와의 연산 결과는 미지수)
-3. 둘 다 구체적인 값이면 → a op b (실제 연산 수행)
-```
-
-### 배경 지식
-
-**최적화:**
-
-```python
-x = 5
-y = 10
-z = x + y  # z = 15 (컴파일 타임에 계산 가능)
-```
-
-상수 전파 후:
-- x의 상태: 5
-- y의 상태: 10
-- z의 상태: 15
-
-컴파일러가 `z = x + y` 코드를 `z = 15`로 최적화 가능해요.
-
-### 예시
-
-```python
-x = input()      # x: ⊤
-y = 5            # y: 5
-z = x + y        # ⊤ ô+ 5 = ⊤
-w = 3 * 4        # 3 ô* 4 = 12
-```
+상수 전파의 op̂: **둘 다 알려진 상수면 실제 계산**(3 +̂ 2 = 5), 하나라도 ⊤(상수 아님)면 ⊤, ⊥이면 ⊥. 즉 "둘 다 상수일 때만 결과가 상수". 단순하지만 컴파일러 최적화에 강력(슬22). 응용이 슬22.
 
 ---
 
-## Slide 22: 상수 전파 - 응용
+## 슬라이드 22: Constant Propagation — Application
 
-> Compiler optimization:
-> Before: a=3; b=a*2; c=a+input(); a=a*b; e=a+c;
-> After: a=3; b=6; c=3+input(); a=18; e=18+c;
+### 원문 내용
+> ```c
+> Before:          After:
+> a = 3;           a = 3;
+> b = a * 2;       b = 6;
+> c = a + input(); c = 3 + input();
+> a = a * b;       a = 18;
+> e = a + c;       e = 18 + c;
+> ```
 
-### 개념 설명
+### 번역
+> 상수 전파로 **컴파일러 최적화**: 알려진 상수를 미리 계산해 대입(`b=a*2 → b=6`, `a=a*b → a=18`). 단 `input()`이 섞인 c는 ⊤라 일부만 치환(`3+input()`).
 
-상수 전파를 이용한 컴파일러 최적화의 구체적인 예시예요.
+### 해설
 
-**상수 전파 분석 과정:**
+**개념 설명 — 상수 전파의 실용성 (강의 1 동기)**
 
-```python
-# 분석 결과
-a=3      → a: 3
-b=a*2    → a: 3, b: 6 (3*2 = 6 컴파일 타임에 계산)
-c=a+input() → a: 3, b: 6, c: ⊤ (3 + 미지수 = 미지수)
-a=a*b    → a: 18, b: 6, c: ⊤ (3*6 = 18)
-e=a+c    → a: 18, b: 6, c: ⊤, e: ⊤ (18 + 미지수 = 미지수)
-```
-
-**최적화:**
-
-1. `b=a*2` → `b=6`: 상수 폴딩(constant folding)
-2. `a=a*b` → `a=18`: 상수 전파 후 상수 폴딩
-3. `e=a+c` → `e=18+c`: a가 상수이므로 미리 계산
-
-### 배경 지식
-
-**컴파일러 최적화의 효과:**
-
-- 런타임 계산 감소
-- 캐시 효율 개선
-- 분기 예측 개선
-
-### 전체적 맥락
-
-상수 전파는 매우 실용적인 최적화예요:
-- 많은 컴파일러 (GCC, LLVM)에서 기본으로 수행
-- 간단하면서도 효과적
-- 이후 다른 최적화의 기반이 되기도 해요
+상수 전파는 **컴파일러 최적화**(강의 1 슬5~7의 변환)의 핵심입니다. 알려진 상수를 미리 계산해 런타임 연산을 줄입니다(`a*2`를 `6`으로). `input()`이 섞여 ⊤인 변수는 그대로 둠. 강의 1의 "변환엔 건전한 분석"이 실현 — 분석이 "a는 확실히 18"이라 보장해야 치환이 안전. 이제 효율적 고정점 알고리즘(슬23~). 단순 알고리즘의 문제가 슬23.
 
 ---
 
-## Slide 23: 고정점 알고리즘 - 동기
+## 슬라이드 23: Fixed-Point Algorithm — Motivation
 
-> - We need to find lfp(f) where f : Stateⁿ → Stateⁿ
-> - NaiveFixedPointAlgorithm computes every fᵢ in each iteration — much of the computation is redundant
-> - Example: x = (x₁,...,x₇) with f₁(x)=⊤, f₂(x)=x₁[a↦+], f₃(x)=x₂[b↦+], f₄(x)=x₃, f₅(x)=x₄[c↦ˆ+(x₄(a),x₄(b))], f₆(x)=x₄[c↦ˆ-(x₄(a),x₄(b))], f₇(x)=x₅⊔x₆
+### 원문 내용
+> - We need to find lfp(f) where f : State^n → State^n
+> - NaiveFixedPointAlgorithm computes every fi in each iteration
+>   - Much of the computation is redundant
+> (예: x=(x1,...,x7), f1~f7의 정의)
 
-### 개념 설명
+### 번역
+> - 단순 고정점 알고리즘은 **매 반복마다 모든 fi를 재계산** → 대부분 중복(redundant)
+> - 대부분의 노드는 안 바뀌는데도 다시 계산하는 낭비
 
-소박한 고정점 알고리즘이 왜 비효율적인지 보여주는 슬라이드예요.
+### 해설
 
-**문제:**
+**개념 설명 — 단순 알고리즘의 비효율**
 
-```python
-NaiveFixedPointAlgorithm(f):
-    x = ⊥
-    while x ≠ f(x):
-        x = f(x)  # f 전체를 매번 계산
-    return x
-```
-
-매 반복마다 **모든** f₁, ..., fₙ을 계산해요:
-
-```
-반복 1: f(x) = (f₁(x), f₂(x), ..., f₇(x))
-반복 2: f(x) = (f₁(x), f₂(x), ..., f₇(x))
-...
-```
-
-### 배경 지식
-
-**불필요한 계산:**
-
-예시에서:
-- f₂는 x₁에만 의존
-- f₃은 x₂에만 의존
-- ...
-
-하지만 매번 모든 것을 재계산해요:
-
-```
-반복 1: f₁(⊥) = ⊤ (변화)
-반복 2: f₂(x) = ⊤[a↦+] (변화)
-반복 3: f₃(x) = ... (변화)
-반복 4: f₄(x) = ... (변화)
-반복 5: f₅(x) = ... (변화)
-반복 6: f₆(x) = ... (변화)
-반복 7: f₇(x) = ... (변화)
-반복 8: f₁(x) = ⊤ (변화 없음) ← 불필요!
-반복 9: ...
-```
-
-### 전체적 맥락
-
-실제 대규모 프로그램에서:
-- n이 수천 개 이상일 수 있어요
-- 각 fᵢ 계산도 비쌀 수 있어요
-- 효율적인 알고리즘이 필수입니다
+강의 6 슬16의 단순 알고리즘은 매 반복 **모든 노드 fi를 다시 계산**합니다. 그런데 대부분 노드는 한 반복에서 안 바뀝니다(예: f2는 x1에만 의존하는데 x1이 안 바뀌면 f2 재계산 무의미). 이 **중복 계산**을 줄이는 게 슬24~34의 목표. 구조 활용이 슬24.
 
 ---
 
-## Slide 24: 고정점 알고리즘 - 구조 활용
+## 슬라이드 24: Fixed-Point Algorithm — Exploiting Structure
 
-> Same example.
-> - e.g., f₂ depends only on x₁, but the value of x₁ does not change in most iterations
-> - We can exploit the fact that our lattice is Lⁿ and f consists of f₁, ..., fₙ
+### 원문 내용
+> - e.g., f2 depends only on x1, but the value of x1 does not change in most iterations
+> - We can exploit the fact that our lattice is L^n and f consists of f1, ..., fn
 
-### 개념 설명
+### 번역
+> - f2는 x1에만 의존하는데, x1은 대부분 반복에서 안 바뀜
+> - 격자가 **곱 `L^n`**이고 f가 **성분별 f1,...,fn**으로 나뉜다는 구조를 활용
 
-구조를 활용해서 불필요한 계산을 줄이는 아이디어를 소개하는 슬라이드예요.
+### 해설
 
-**핵심 관찰:**
+**개념 설명 — 곱 구조를 활용**
 
-1. **의존성**: f₂는 x₁에만 의존
-2. **안정성**: x₁이 변하지 않으면 f₂(x)도 변하지 않음
-3. **결론**: x₁이 변하지 않을 때는 f₂를 계산할 필요 없음
-
-### 배경 지식
-
-**격자 구조 활용:**
-
-f : Lⁿ → Lⁿ를 각 좌표별로 분해하면:
-```
-f(x₁, ..., xₙ) = (f₁(x₁,...,xₙ), ..., fₙ(x₁,...,xₙ))
-```
-
-각 fᵢ가 모든 변수에 의존할 필요는 없어요.
-
-### 전체적 맥락
-
-이 아이디어로부터 발전된 알고리즘들:
-- Round Robin
-- Chaotic Iteration
-- Worklist Algorithm
-
-각 알고리즘은 의존성을 다르게 활용해요.
+핵심 관찰: 격자가 곱 `L^n`이고 전이가 성분별(`f1,...,fn`)이므로, **각 성분을 따로 갱신**할 수 있습니다. 그리고 각 fi는 **일부 성분에만 의존**(f2는 x1만). 따라서 "바뀐 성분이 의존하는 fi만 다시 계산"하면 됩니다. 이 발상이 Round Robin(슬25)·Chaotic(슬27)·워크리스트(슬29~)로 발전. Round Robin이 슬25.
 
 ---
 
-## Slide 25: Round Robin 알고리즘
+## 슬라이드 25: Round Robin Algorithm
 
-> x = (x₁,...,xₙ), f(x) = (f₁(x),...,fₙ(x))
-> RoundRobin(f₁,...,fₙ):
+### 원문 내용
+> ```
+> RoundRobin(f1, ..., fn):
 >   x ← ⊥
->   while x ≠ f(x) do
->     for i in 1...n:
->       xᵢ ← fᵢ(x)
+>   while x ≠ f(x):
+>     for i in 1..n: xi ← fi(x)
 >   return x
-> - One iteration of the while loop does not give the same result as one iteration of NaiveFixedPointAlgorithm in general
-> - However, always terminates and produces lfp(f)
-> - The number of iterations until the fixed point may be smaller
+> ```
+> - One iteration of the while loop does not give the same result as one iteration of NaiveFixedPointAlgorithm
+> - Always terminates and produces lfp(f); The number of iterations may be smaller
 
-### 개념 설명
+### 번역
+> **Round Robin**: ⊥에서 시작, 수렴할 때까지 각 성분을 **순서대로 즉석 갱신**(`xi ← fi(x)`, 갱신된 값을 바로 다음 계산에 사용).
+> - 단순 알고리즘과 한 반복 결과는 다르지만, **항상 종료하고 lfp 산출**, 반복 횟수가 더 적을 수 있음
 
-Round Robin 알고리즘은 각 노드를 차례대로 하나씩 업데이트해요.
+### 해설
 
-**알고리즘:**
+**개념 설명 — Round Robin: 즉석 갱신 ★**
 
-```python
-def RoundRobin(f₁, ..., fₙ):
-    x = ⊥
-    while x ≠ f(x):
-        for i in 1 to n:
-            xᵢ = fᵢ(x)  # 각 노드를 하나씩 업데이트
-    return x
-```
-
-**특징:**
-
-1. 외부 while 루프: 고정점 도달까지
-2. 내부 for 루프: 1부터 n까지 순서대로 업데이트
-3. 각 반복마다 모든 노드를 한 번씩 방문
-
-### 배경 지식
-
-**수렴성:**
-
-Round Robin도 고정점에 도달해요:
-- f가 단조함수이고 L이 유한 높이 격자라면
-- 항상 수렴하고 lfp(f)를 계산합니다.
-
-**효율성:**
-
-소박한 알고리즘보다 빠를 수 있어요:
-- 하지만 반복 횟수는 같을 수도, 적을 수도 있어요
-- 가장 좋은 경우: 반복이 크게 줄어듦
-
-### 예시
-
-```python
-# 초기: x₁=⊥, x₂=⊥, x₃=⊥, ..., x₇=⊥
-# 반복 1의 for 루프:
-#   x₁ ← f₁(x) = ⊤
-#   x₂ ← f₂(x) = ⊤[a↦+]
-#   x₃ ← f₃(x) = ...
-#   ...
-#   x₇ ← f₇(x) = ...
-# 반복 2의 for 루프: (다시 1부터 7까지)
-#   x₁ ← f₁(x) = ⊤ (변화 없음)
-#   x₂ ← f₂(x) = ... (변화 있을 수도)
-```
+단순 알고리즘은 "모든 fi를 옛 x로 계산 후 한꺼번에 갱신"(Jacobi 방식)이지만, **Round Robin**은 "각 xi를 갱신하며 그 새 값을 바로 다음 fi에 사용"(Gauss-Seidel 방식). 갱신된 정보가 같은 반복 안에서 더 빨리 전파되어 **수렴이 빨라집니다**. Assignment 4의 `find_fixed_point`가 정확히 이 Gauss-Seidel Round Robin. 여전히 lfp에 수렴(순서 무관, 슬26). 관찰이 슬26.
 
 ---
 
-## Slide 26: Round Robin - 관찰
+## 슬라이드 26: Round Robin — Observations
 
-> [Same pseudocode]
+### 원문 내용
 > - The order of the iterations i := 1...n is irrelevant with the final result
-> - We need to update xᵢ if xᵢ ≠ fᵢ(x) to reach the fixed point
-> - We do not need to update xᵢ if xᵢ = fᵢ(x)
+> - We need to update xi if xi ≠ fi(x) to reach the fixed point
+> - We do not need to update xi if xi = fi(x)
 
-### 개념 설명
+### 번역
+> - 성분 갱신 **순서는 최종 결과와 무관**
+> - `xi ≠ fi(x)`인 성분만 갱신하면 됨(바뀐 것만), `xi = fi(x)`이면 갱신 불필요
 
-Round Robin의 중요한 성질들을 정리하는 슬라이드예요.
+### 해설
 
-**성질 1: 순서 무관성**
+**개념 설명**
 
-```python
-for i in [1,2,3,...,n]:     # 이 순서로 업데이트하나
-for i in [n,...,3,2,1]:     # 역순으로 업데이트하나
-for i in [3,1,4,1,5,...]:   # 임의의 순서로 하나
-```
-
-최종 결과는 같아요! (수렴 후)
-
-다만, 수렴 속도는 다를 수 있어요.
-
-**성질 2: 필요한 업데이트만**
-
-```python
-if xᵢ ≠ fᵢ(x):    # 값이 변할 경우만
-    xᵢ ← fᵢ(x)
-# else: 이미 고정점 조건 만족
-```
-
-### 배경 지식
-
-**고정점 조건:**
-
-x가 고정점 ⟺ x = f(x) ⟺ x₁ = f₁(x) AND x₂ = f₂(x) AND ... AND xₙ = fₙ(x)
-
-따라서 모든 i에 대해 xᵢ = fᵢ(x)일 때 고정점에 도달해요.
-
-### 전체적 맥락
-
-이 관찰로부터:
-- 불필요한 업데이트를 건너뛸 수 있어요
-- 어떤 노드를 먼저 업데이트할지도 선택 가능해요
-- 이것이 Chaotic Iteration의 토대가 됩니다.
+두 관찰: ① **순서 무관**(어떤 순서로 갱신해도 같은 lfp — 단조성·고정점 유일성). ② **바뀌는 것만 갱신하면 충분**. 이 둘이 더 똑똑한 알고리즘(Chaotic·워크리스트)의 근거입니다. "안 바뀌는 성분은 건너뛰자"가 슬27. Assignment 4가 `old != widened`일 때만 갱신하는 것도 이 관찰.
 
 ---
 
-## Slide 27: Chaotic Iteration
+## 슬라이드 27: Chaotic Iteration
 
-> ChaoticIteration(f₁,...,fₙ):
+### 원문 내용
+> ```
+> ChaoticIteration(f1, ..., fn):
 >   x ← ⊥
->   while x ≠ f(x) do
->     choose i ∈ {1,...,n} s.t. xᵢ ≠ fᵢ(x)
->     xᵢ ← fᵢ(x)
+>   while x ≠ f(x):
+>     choose i ∈ {1,...,n} s.t. xi ≠ fi(x)
+>     xi ← fi(x)
 >   return x
-> - Always terminates and produces lfp(f)
-> - The number of assignments until the fixed point may be smaller
+> ```
+> - Always terminates and produces lfp(f); The number of assignments may be smaller
 
-### 개념 설명
+### 번역
+> **Chaotic Iteration**: 매번 **바뀔 성분(`xi ≠ fi(x)`) 하나를 골라** 갱신. 항상 종료·lfp 산출, 갱신 횟수가 더 적을 수 있음.
 
-Chaotic Iteration은 Round Robin에서 한 발 더 나아가 **필요한 노드만** 업데이트해요.
+### 해설
 
-**알고리즘:**
+**개념 설명 — Chaotic: 바뀔 것만 골라 갱신**
 
-```python
-def ChaoticIteration(f₁, ..., fₙ):
-    x = ⊥
-    while x ≠ f(x):
-        # xᵢ ≠ fᵢ(x)인 i를 하나 선택
-        i를 선택  # 어떤 i든 상관없음
-        xᵢ = fᵢ(x)  # 그 노드만 업데이트
-    return x
-```
-
-**특징:**
-
-1. for 루프가 없음 (하나씩만 선택)
-2. 고정점을 만족하지 않는 노드만 업데이트
-3. 순서는 임의로 선택 가능
-
-### 배경 지식
-
-**수렴성:**
-
-Chaotic Iteration도 항상 수렴해요:
-- 각 노드를 기껏해야 h번(h = 격자의 높이) 업데이트
-- 전체 업데이트 횟수 ≤ n·h
-
-### 예시
-
-```python
-# 초기: x = (⊥, ⊥, ⊥, ..., ⊥)
-
-# 반복 1:
-#   x₁ ≠ f₁(x) (⊥ ≠ ⊤)이므로 선택
-#   x₁ ← ⊤
-
-# 반복 2:
-#   x₂ ≠ f₂(x) (⊥ ≠ ...)이므로 선택
-#   x₂ ← f₂(x)
-
-# 반복 3:
-#   x₃, x₄, x₇ 중 업데이트 필요한 것 선택
-#   x₅ ← f₅(x)  # 예를 들어 x₅ 선택
-
-# ...계속...
-```
-
-### 전체적 맥락
-
-이 알고리즘의 문제점:
-- 어떤 i를 선택할지 매번 결정해야 해요
-- 이를 알아내는 것 자체가 비싼 연산이에요
-- 다음 슬라이드에서 이를 해결해요
+Round Robin이 순서대로 다 도는 대신, **Chaotic**은 "바뀔 성분 하나를 골라" 갱신합니다(슬26의 관찰 ②). 불필요한 갱신을 더 줄입니다. 순서 무관(슬26 관찰 ①)이라 어느 걸 고르든 lfp에 도달. 단 "바뀔 i를 어떻게 고르나"가 문제(슬28). 강의 11 cubic의 Propagate가 이 발상.
 
 ---
 
-## Slide 28: Chaotic Iteration - 문제점
+## 슬라이드 28: Chaotic Iteration — Problems
 
-> [Same pseudocode]
+### 원문 내용
 > - Not practical, as efficiency depends on the choice of i
-> - Finding i requires computing fᵢ's so it is expensive
+> - Finding i requires computing fi's so it is expensive
 
-### 개념 설명
+### 번역
+> - **비실용적**: 효율이 i 선택에 좌우됨
+> - 바뀔 i를 찾으려면 결국 fi들을 계산해 봐야 해서 비쌈(닭과 달걀)
 
-Chaotic Iteration의 이론적 장점이 실제로 구현하기 어려운 이유를 설명해요.
+### 해설
 
-**문제 1: 선택의 어려움**
+**개념 설명**
 
-```python
-# 어떤 i를 선택할 것인가?
-while x ≠ f(x):
-    choose i s.t. xᵢ ≠ fᵢ(x)  # ← 이 선택이 어려워!
-```
-
-좋은 선택이라면:
-- 수렴을 빠르게 해요
-- 최소한의 반복으로 고정점 도달
-
-나쁜 선택이라면:
-- 불필요한 계산이 많아져요
-- 수렴까지 오래 걸려요
-
-**문제 2: 선택 비용**
-
-조건 `xᵢ ≠ fᵢ(x)`를 확인하려면:
-```python
-for i in 1 to n:           # 모든 i를 확인?
-    if xᵢ ≠ fᵢ(x):        # fᵢ(x) 계산 필요
-        # ...이 i를 선택
-```
-
-이렇게 하면 모든 fᵢ를 계산하게 되어 원래 알고리즘과 별 다를 게 없어요!
-
-### 배경 지식
-
-**효율성 vs 구현 난이도**
-
-- 이론적으로: 업데이트 횟수가 최소 (O(n·h))
-- 실제로: 좋은 선택 전략을 찾기 어려움
-
-### 전체적 맥락
-
-이 문제를 해결하기 위해 **Worklist 알고리즘**이 등장해요:
-- 선택을 명시적으로 관리 (worklist)
-- 업데이트가 필요한 노드만 기록
-- 효율적이면서도 구현 가능
+Chaotic의 문제: "바뀔 성분을 고르려면" 모든 fi를 계산해 봐야 하는데, 그게 바로 피하려던 비용입니다. 즉 **선택 자체가 비싸** 실용적이지 않습니다. 해법: **무엇이 바뀌면 무엇을 다시 계산해야 하는지 의존성을 미리 기록**해 두기 → 워크리스트(슬29~). 관찰이 슬29.
 
 ---
 
-## Slide 29: Worklist 알고리즘 - 관찰
+## 슬라이드 29: Worklist Algorithm — Observation
 
-> - fᵢ typically uses only a few of x₁,...,xₙ
+### 원문 내용
+> - fi typically uses only a few of x1, ..., xn
 > - We can record the nodes that need recomputation based on what we updated, rather than newly finding them every time
-> [Same example equations]
 
-### 개념 설명
+### 번역
+> - 각 fi는 보통 **x1,...,xn 중 일부만** 사용
+> - 매번 새로 찾는 대신, "**무엇을 갱신하면 어떤 노드를 다시 계산해야 하는지**"를 **미리 기록**
 
-Worklist 알고리즘의 핵심 아이디어를 소개해요.
+### 해설
 
-**관찰 1: 제한된 의존성**
+**개념 설명 — 워크리스트의 핵심 아이디어 ★**
 
-```
-f₁(x) = ⊤                                    # x에 의존하지 않음
-f₂(x) = x₁[a ↦ +]                          # x₁에만 의존
-f₃(x) = x₂[b ↦ +]                          # x₂에만 의존
-f₄(x) = x₃                                  # x₃에만 의존
-f₅(x) = x₄[c ↦ ˆ+(x₄(a), x₄(b))]          # x₄에만 의존
-f₆(x) = x₄[c ↦ ˆ-(x₄(a), x₄(b))]          # x₄에만 의존
-f₇(x) = x₅ ⊔ x₆                            # x₅와 x₆에 의존
-```
-
-각 fᵢ는 전체 x가 아니라 **특정 원소들**에만 의존해요.
-
-**관찰 2: 역 의존성 활용**
-
-xᵢ가 변하면, fᵢ(x)가 변할 수 있는 모든 j를 찾아요:
-
-```
-만약 x₄가 변하면:
-  → f₅가 변할 수 있음
-  → f₆이 변할 수 있음
-
-만약 x₅가 변하면:
-  → f₇이 변할 수 있음
-```
-
-따라서 x₄를 업데이트했을 때는 f₅, f₆만 재계산하면 돼요.
-
-### 배경 지식
-
-**의존성 그래프:**
-
-```
-f₁
- ↓
-f₂
- ↓
-f₃
- ↓
-f₄
- ↙  ↘
-f₅  f₆
- ↘  ↙
-  f₇
-```
-
-노드 i에서 노드 j로의 간선: fⱼ가 xᵢ에 의존
-
-### 전체적 맥락
-
-이 의존성을 명시적으로 관리하면:
-- 어떤 노드를 업데이트할지 쉽게 결정 가능
-- 불필요한 계산 회피
-- 효율적이면서도 구현 가능한 알고리즘 완성
+Chaotic의 "매번 찾기" 문제를, **의존성을 미리 기록**해 해결합니다: "xi가 바뀌면 그것에 의존하는 노드들만 다시 계산하면 된다"를 알고 있으면, 바뀐 노드의 의존 노드들을 **대기열(worklist)에 넣어** 처리하면 됩니다. 새로 탐색할 필요 없음. 이 의존성 맵이 `dep`(슬30). 강의 11 cubic의 워크리스트 W, Assignment 4의 워크리스트 분석과 같은 발상.
 
 ---
 
-## Slide 30: Worklist 알고리즘 - dep
+## 슬라이드 30: Worklist Algorithm — dep
 
-> - We introduce a map dep : Node → P(Node)
->   - dep(v) = the set of nodes whose information depends on the information of v
+### 원문 내용
+> - dep : Node → 𝒫(Node)
+> - dep(v) = the set of nodes whose information depends on the information of v
 > - For the sign analysis and constant propagation analysis, dep = succ
 > - When the information of v is updated, only the nodes in dep(v) need to be recomputed
 
-### 개념 설명
+### 번역
+> - **`dep : Node → 𝒫(Node)`**: `dep(v)` = **v의 정보에 의존하는 노드들의 집합**
+> - 부호 분석·상수 전파에서는 **dep = succ**(후속자) — 전방 분석이라 v가 바뀌면 그 후속이 영향받음
+> - v가 갱신되면 **`dep(v)`의 노드만 다시 계산**
 
-의존성을 명시적으로 표현하는 dep 함수를 정의해요.
+### 해설
 
-**dep 함수:**
+**개념 설명 — dep = 의존성 맵 ★**
 
-```
-dep : Node → P(Node)
-dep(v) = {u | fᵤ가 xᵥ에 의존}
-```
-
-예를 들어:
-- `dep(v₁) = {v₂}`: f₂가 x₁에 의존하므로
-- `dep(v₄) = {v₅, v₆}`: f₅, f₆이 x₄에 의존하므로
-- `dep(v₅) = {v₇}`: f₇이 x₅에 의존하므로
-
-**CFG 분석에서의 dep:**
-
-부호 분석과 상수 전파에서:
-```
-dep(v) = succ(v)  (v의 후계자들)
-```
-
-왜냐하면:
-- fᵥ의 결과가 JOIN(succ(v))로 이어져요
-- 따라서 v의 후계자들만 영향받음
-
-### 배경 지식
-
-**일반적인 경우:**
-
-```
-if condition:
-    x = ...
-    ↓ (CFG 간선)
-y = x + ...  (succ 노드는 이 할당)
-```
-
-x를 업데이트하면 그 후계자인 y 계산에 영향을 줘요.
-
-### 전체적 맥락
-
-dep을 계산하는 방법:
-1. **정적 분석**: 코드를 훑어 의존성 파악
-2. **동적 추적**: 실제 계산 중 의존성 기록
-3. **경험적 추정**: 보수적으로 모든 노드 포함
-
-정확한 dep일수록 효율성이 높아요.
+**`dep(v)`**는 "v가 바뀌면 다시 계산해야 할 노드들"입니다. **전방 분석(부호·상수)에선 `dep = succ`**(후속자) — v의 상태가 바뀌면 v를 선행자로 갖는 후속 노드들의 JOIN이 영향받기 때문. (후방 분석이면 dep=pred — 강의 12의 live guard.) 이 의존성으로 "바뀐 노드의 후속만" 워크리스트에 넣습니다. 예가 슬31.
 
 ---
 
-## Slide 31: Worklist 알고리즘 - dep 예시
+## 슬라이드 31: Worklist Algorithm — dep Example
 
-> ⟦v₅⟧ = ⟦v₄⟧[c ↦ ˆ+(⟦v₄⟧(a), ⟦v₄⟧(b))]
-> ⟦v₆⟧ = ⟦v₄⟧[c ↦ ˆ-(⟦v₄⟧(a), ⟦v₄⟧(b))]
-> dep(v₄) = {v₅, v₆}
+### 원문 내용
+> - ⟦v5⟧ = ⟦v4⟧[c ↦ +̂(⟦v4⟧(a), ⟦v4⟧(b))]
+> - ⟦v6⟧ = ⟦v4⟧[c ↦ −̂(⟦v4⟧(a), ⟦v4⟧(b))]
+> - dep(v4) = {v5, v6}
 
-### 개념 설명
+### 번역
+> v5, v6이 모두 ⟦v4⟧에 의존 → `dep(v4) = {v5, v6}`. v4가 갱신되면 v5·v6만 다시 계산.
 
-구체적인 제약 규칙에서 dep를 계산하는 예시예요.
+### 해설
 
-**분석:**
+**개념 설명**
 
-v₅의 제약: `⟦v₅⟧ = ⟦v₄⟧[c ↦ ˆ+(⟦v₄⟧(a), ⟦v₄⟧(b))]`
-- ⟦v₅⟧가 ⟦v₄⟧에 의존 ✓
-- ⟦v₄⟧가 변하면 ⟦v₅⟧도 변할 수 있음
-
-v₆의 제약: `⟦v₆⟧ = ⟦v₄⟧[c ↦ ˆ-(⟦v₄⟧(a), ⟦v₄⟧(b))]`
-- ⟦v₆⟧가 ⟦v₄⟧에 의존 ✓
-- ⟦v₄⟧가 변하면 ⟦v₆⟧도 변할 수 있음
-
-v₇의 제약: `⟦v₇⟧ = ⟦v₅⟧ ⊔ ⟦v₆⟧`
-- ⟦v₇⟧는 ⟦v₅⟧과 ⟦v₆⟧에 의존
-- ⟦v₄⟧에는 직접 의존하지 않음
-
-따라서: `dep(v₄) = {v₅, v₆}`
-
-### 배경 지식
-
-**CFG와의 연결:**
-
-데이터흐름 분석에서 dep은 보통:
-```
-dep(v) = succ(v)  (CFG에서 v의 후계자)
-```
-
-CFG 구조가 명확하면 dep도 명확해요.
-
-### 전체적 맥락
-
-이제 worklist 알고리즘을 구현할 준비가 됐어요:
-- v를 업데이트하면 dep(v)를 worklist에 추가
-- 효율적이고 정확한 고정점 계산 가능
+v5·v6의 제약이 ⟦v4⟧를 참조하므로 `dep(v4)={v5,v6}`. v4가 바뀌면 v5·v6만 워크리스트에 넣어 재계산 — 나머지 노드는 건드리지 않음. 이 의존성 추적이 효율의 핵심. 알고리즘이 슬32.
 
 ---
 
-## Slide 32: Worklist 알고리즘 - 의사코드
+## 슬라이드 32: Worklist Algorithm — Pseudocode
 
-> SimpleWorkListAlgorithm(f₁,...,fₙ):
+### 원문 내용
+> ```
+> SimpleWorkListAlgorithm(f1, ..., fn):
 >   x ← ⊥
->   W ← {v₁,...,vₙ}
->   while W ≠ ∅ do
->     vᵢ ← W.removeOne()
->     y ← fᵢ(x)
->     if y ≠ xᵢ:
->       xᵢ ← y
->       W ← W ∪ dep(vᵢ)
+>   W ← {v1, ..., vn}
+>   while W ≠ ∅:
+>     vi ← W.removeOne()
+>     y ← fi(x)
+>     if y ≠ xi:
+>       xi ← y
+>       W ← W ∪ dep(vi)
 >   return x
-> - W is called the worklist
-> - Always terminates and produces lfp(f)
+> ```
+> - W is called the worklist; Always terminates and produces lfp(f)
 
-### 개념 설명
+### 번역
+> **워크리스트 알고리즘**: 모든 노드를 워크리스트 W에 넣고 시작. W가 빌 때까지: 노드 하나 꺼내 fi 계산 → **바뀌었으면(`y≠xi`) 갱신하고 그 의존 노드(`dep(vi)`)를 W에 추가**. 항상 종료·lfp 산출.
 
-실제 구현 가능한 효율적인 Worklist 알고리즘이에요.
+### 해설
 
-**알고리즘:**
+**개념 설명 — 워크리스트 알고리즘 ★★**
 
-```python
-def SimpleWorkListAlgorithm(f₁, ..., fₙ):
-    x = ⊥                      # 모든 노드를 ⊥로 초기화
-    W = {v₁, ..., vₙ}         # worklist: 모든 노드로 시작
+데이터플로우 분석의 **표준 알고리즘**입니다:
+1. 모든 노드를 워크리스트 W에 넣고 시작.
+2. W에서 노드를 꺼내 그 제약(fi)을 계산.
+3. **값이 바뀌었으면** 갱신하고, 그 노드에 의존하는 노드들(`dep`)을 W에 다시 넣음(재계산 예약).
+4. W가 빌 때(=고정점) 종료.
 
-    while W ≠ ∅:               # worklist가 공백이 아닌 동안
-        vᵢ = W.removeOne()      # worklist에서 하나 꺼냄
-        y = fᵢ(x)              # 노드 i의 함수 계산
-
-        if y ≠ xᵢ:             # 값이 변한 경우만
-            xᵢ = y              # 업데이트
-            W = W ∪ dep(vᵢ)    # 의존하는 노드들을 worklist에 추가
-
-    return x
-```
-
-**주요 단계:**
-
-1. **초기화**: 모든 변수를 ⊥로, worklist를 모든 노드로
-2. **루프**: worklist가 공백이 될 때까지
-   - 노드 하나를 꺼냄
-   - 함수 계산
-   - 변화가 있으면 영향받는 노드들을 worklist에 추가
-
-### 배경 지식
-
-**Worklist의 역할:**
-
-- **추적(Tracking)**: 어떤 노드를 재계산해야 하는지 기록
-- **지연(Postponement)**: 필요할 때만 계산
-- **자동 종료**: worklist가 비면 고정점 도달
-
-### 전체적 맥락
-
-이 알고리즘의 강점:
-- **정확성**: 고정점을 반드시 계산
-- **효율성**: 필요한 노드만 계산
-- **실무성**: 실제로 구현하고 사용 가능
-
-대부분의 정적 분석 도구가 이 알고리즘을 사용해요.
+"바뀐 것만, 영향받는 것만" 계산해 중복을 제거합니다. 강의 11 cubic의 Propagate(W에서 (t,x) 꺼내 전파), Assignment 4의 고정점 반복이 모두 이 구조. 복잡도가 슬33.
 
 ---
 
-## Slide 33: Worklist 알고리즘 - 시간 복잡도
+## 슬라이드 33: Worklist Algorithm — Time Complexity
 
-> If |dep(v)| is bounded by a constant for all nodes v, the worst-case time complexity is O(n · h · k)
-> where:
+### 원문 내용
+> If |dep(v)| is bounded by a constant for all nodes v, the worst-case time complexity is O(n · h · k) where
 > - n is the number of CFG nodes
 > - h is the height of the lattice L = State
-> - k is the worst-case time required to compute fᵢ
+> - k is the worst-case time required to compute fi
 
-### 개념 설명
+### 번역
+> `|dep(v)|`가 상수 이내일 때 최악 복잡도 **O(n·h·k)**:
+> - n = CFG 노드 수
+> - h = 격자 State의 높이
+> - k = fi 계산 비용
 
-Worklist 알고리즘의 성능을 분석한 슬라이드예요.
+### 해설
 
-**시간 복잡도: O(n · h · k)**
+**개념 설명 — O(n·h·k) ★**
 
-- **n**: CFG 노드 개수
-- **h**: 격자의 높이
-- **k**: 한 노드 함수 계산 시간
-
-**복잡도 분석:**
-
-1. **노드별 업데이트 횟수**: 각 노드는 최대 h번 변함
-   - ⊥에서 ⊤로 가는 경로: 최대 h단계
-   - 각 노드는 단조 함수이므로 한 번 증가하면 다시 감소 안 함
-
-2. **영향받는 노드**: 각 노드를 업데이트하면 dep(v)의 노드들이 worklist에 추가
-   - |dep(v)| ≤ c (상수)라고 가정
-   - 따라서 총 추가 횟수 ≤ n·h·c
-
-3. **총 계산 비용**: n·h번의 함수 계산 × k = O(n·h·k)
-
-### 배경 지식
-
-**격자의 높이:**
-
-- 부호 분석: h = 3 (⊥ → 부호 → ⊤)
-- 상수 전파 (flat): h = 2 (⊥ → 상수/⊤ → 상수/⊤)
-- 구간 분석: h = ∞ (무한 가능)
-
-### 예시
-
-```
-n = 1000 (CFG 노드)
-h = 3 (부호 분석 격자의 높이)
-k = 10 (함수 계산 시간)
-dep의 최대 크기 = 2 (CFG에서 후계자는 최대 2개)
-
-시간 복잡도 = 1000 × 3 × 10 = 30,000 단위
-```
-
-실제로는 훨씬 빨라요 (모든 노드가 h번 변하는 건 아니므로).
-
-### 전체적 맥락
-
-이 복잡도는:
-- 선형적으로 프로그램 크기(n)에 비례
-- 격자가 유한하면 항상 수렴
-- 실무적으로 충분히 빨라요
+워크리스트의 복잡도: 각 노드는 값이 바뀔 때만 재처리되는데, **한 노드의 값은 격자에서 최대 h번**(높이만큼) 올라갈 수 있습니다(단조 증가, 강의 6). 노드 n개, 각 재처리에 fi 계산 k → **O(n·h·k)**. 핵심: **유한 높이 h가 종료와 복잡도를 좌우**(강의 5 슬24, 강의 6 Kleene). 높이가 크거나 무한이면 위드닝으로 줄임(강의 9). 개선책이 슬34.
 
 ---
 
-## Slide 34: Worklist 알고리즘 - 가능한 개선
+## 슬라이드 34: Worklist Algorithm — Potential Improvements
 
+### 원문 내용
 > - Handle strongly connected components (cycles) separately
 > - Use a priority queue for the worklist
-> - Make the dependence information more precise by allowing dep to consider x₁,...,xₙ in addition to v
+> - Make the dependence information more precise by allowing dep to consider x1, ..., xn in addition to v
 
-### 개념 설명
+### 번역
+> 개선책: **강한 연결 요소(SCC, 사이클) 별도 처리**, 워크리스트에 **우선순위 큐** 사용, **더 정밀한 의존성**(노드뿐 아니라 변수 단위로).
 
-Worklist 알고리즘의 효율성을 더욱 높이기 위한 개선 기법들이에요.
+### 해설
 
-**개선 1: 강연결 성분(SCC) 처리**
+**개념 설명**
 
-```
-제어 흐름 그래프의 루프(사이클):
-
-v₁ → v₂ → v₃ ↘
-          ↗ v₄
-```
-
-루프가 있는 부분을 특별히 처리해요:
-- 루프를 하나의 블록으로 취급
-- 루프 내부의 고정점을 먼저 계산
-- 그 후 다른 부분 계산
-
-장점: 루프로 인한 불필요한 반복 감소
-
-**개선 2: 우선순위 큐**
-
-```python
-# 기본: 임의의 노드 처리
-W = {v₁, v₃, v₇}  # 어떤 순서든 괜찮음
-
-# 개선: 좋은 순서로 처리
-W = PriorityQueue()
-# 예: 아직 변하지 않은 노드를 우선 처리
-# 또는: 영향 범위가 넓은 노드를 우선 처리
-```
-
-효과: 수렴 속도 향상
-
-**개선 3: 정확한 의존성**
-
-```python
-# 기본: 정적 의존성
-dep(v₄) = {v₅, v₆}  # 항상 동일
-
-# 개선: 동적 의존성
-# v₄의 특정 변수(예: a)가 변했다면
-# 그것을 사용하는 노드만 추가
-# v₄의 a와 b 중 a만 변했다면
-# a를 사용하는 함수만 재계산
-```
-
-효과: 불필요한 계산 제거
-
-### 배경 지식
-
-**강연결 성분(SCC):**
-
-CFG에서 서로 도달 가능한 노드들의 집합
-
-```
-CFG:
-v₁ → v₂ ← v₃
-     ↓ ↗
-
-SCC: {v₁}과 {v₂, v₃}
-```
-
-### 전체적 맥락
-
-이들 개선은:
-- 이론적 복잡도는 변하지 않음
-- 실제 성능은 크게 개선
-- 현대 분석 도구들이 사용하는 기법들이에요
+워크리스트 최적화: **SCC(사이클) 단위 처리**(강의 11 cubic의 사이클 제거, 강의 12·15의 SCC와 같은 발상), 우선순위 큐(좋은 순서로 처리해 재방문↓), 변수 단위 의존성(더 세밀하게). 이론적 O(n·h·k)를 실전에서 줄이는 기법들. 전체 요약이 슬35.
 
 ---
 
-## Slide 35: 요약
+## 슬라이드 35: Summary
 
+### 원문 내용
 > - Dataflow analysis assigns constraint variables over a lattice to CFG nodes and solves monotone constraints via fixed-point computation
 > - Sign analysis tracks the sign of variables; constant propagation tracks exact integer values
 > - The naive fixed-point algorithm recomputes all nodes each iteration; Round Robin and Chaotic Iteration improve on this
 > - The worklist algorithm uses dependency information (dep) to recompute only affected nodes, achieving O(n·h·k) complexity
 
-### 개념 설명
+### 번역
+> - 데이터플로우 분석은 CFG 노드에 격자 변수를 두고 **단조 제약을 고정점으로** 풂
+> - 부호 분석은 변수의 부호를, 상수 전파는 정확한 정수값을 추적
+> - 단순 고정점 알고리즘은 매번 모든 노드 재계산; **Round Robin·Chaotic**이 개선
+> - **워크리스트 알고리즘**은 의존성(dep)으로 영향받는 노드만 재계산해 **O(n·h·k)** 달성
 
-강의 전체를 정리하는 최종 슬라이드예요.
+### 해설
 
-**데이터흐름 분석의 핵심:**
+**전체 정리 — 강의 7의 한 장 요약**
 
-1. **격자를 이용한 추상화**: 프로그램의 복잡한 상태를 수학적 구조로 표현
-2. **제약 변수**: CFG의 각 노드에 하나씩 할당
-3. **고정점 계산**: 단조성을 이용해 반복으로 고정점 도달
+1. **단조 프레임워크**: CFG + 완비 격자 + 단조 전이 함수. 격자·규칙만 바꾸면 다른 분석(부호·상수전파·도달정의...).
+2. **부호 분석**: 격자 Var→Sign, JOIN(선행자 ⊔), 전이(JOIN→eval→갱신), 추상 연산자 op̂(건전·단조). 고정점으로 풀이.
+3. **상수 전파**: 같은 틀에 flat(ℤ) 격자. 컴파일러 최적화 응용.
+4. **알고리즘 진화**: 단순(전부 재계산) → Round Robin(즉석 갱신) → Chaotic(바뀔 것만) → **워크리스트**(의존성 dep으로 영향 노드만). O(n·h·k).
 
-**구체적 분석들:**
+**다른 강의와의 연결 (파일 간 연결성)**
 
-- **부호 분석**: -, 0, + 를 구분하는 간단한 격자
-  - 용도: 0으로 나누기 검출 등
-  - 한계: 정밀도가 낮음
+- ← **강의 5~6**: 격자(JOIN=lub), 고정점(Kleene 반복=워크리스트), 단조성, 유한 높이=종료/복잡도.
+- ← **강의 2**: CFG/MIR이 분석 대상. Assignment 4가 이 워크리스트(Gauss-Seidel)를 MIR에 적용.
+- → **강의 8 (데이터플로우 2)**: 도달 정의·사용 가능 식 등 멱집합 도메인, may/must·전방/후방 4분면.
+- → **강의 9 (위드닝)**: 무한 높이 격자(구간)에서 종료 위해 위드닝. 슬17·18의 정밀도 동기.
+- → **강의 11 (cubic)**: 워크리스트 W·전파가 cubic 알고리즘과 동형(토큰 단위).
+- → **강의 12·15 (응용·포인터)**: live/available guard(후방, dep=pred), 흐름 감각 포인터가 같은 데이터플로우 틀.
+- → **강의 18~20 (추상 해석)**: JOIN=CJOIN, 전이 함수, lfp가 의미론·건전성 정리의 토대.
 
-- **상수 전파**: 변수의 정확한 정수값 추적
-  - 용도: 컴파일러 최적화 (상수 폴딩)
-  - 한계: 입력이 있으면 빠르게 ⊤가 됨
-
-**알고리즘의 진화:**
-
-1. **소박한 알고리즘**: 매 반복마다 모든 함수 계산 → 비효율적
-2. **Round Robin**: 노드를 순서대로 처리 → 약간의 개선
-3. **Chaotic Iteration**: 필요한 노드만 선택 → 이론적으로 최적이지만 구현 어려움
-4. **Worklist 알고리즘**: 의존성을 명시적으로 관리 → 효율적이면서도 구현 가능
-
-**성능:**
-
-- **시간 복잡도**: O(n·h·k)
-  - n: 노드 수, h: 격자 높이, k: 함수 계산 시간
-  - 실무적으로 충분히 빠름
-
-### 배경 지식
-
-**데이터흐름 분석의 적용 분야:**
-
-1. **컴파일러 최적화**: 상수 전파, 데드 코드 제거
-2. **버그 탐지**: 불가능한 값 추적 (0으로 나누기 등)
-3. **보안 분석**: 위험한 연산 추적
-4. **코드 이해**: 변수의 범위 파악
-
-### 전체적 맥락
-
-이 강의에서 배운 개념들:
-- 격자와 단조성
-- 고정점 이론
-- 효율적인 알고리즘 설계
-
-은 단순히 데이터흐름 분석뿐 아니라, **정적 분석 전반**의 기초를 이루고 있습니다.
-
-다음 강의에서는 이를 더욱 발전시켜 다양한 분석 기법들을 살펴볼 거예요:
-- 정확도 개선 (경로 민감성, 문맥 민감성)
-- 효율성 개선 (점진적 분석, 병렬화)
-- 실제 프로그래밍 언어에의 적용
+**가장 큰 교훈**: **데이터플로우 분석은 "격자 + JOIN + 전이 함수"를 CFG에 끼우고 고정점을 푸는 일반 프레임워크**입니다. 부호·상수전파는 같은 틀의 다른 인스턴스(격자만 교체). 그리고 **워크리스트 알고리즘**이 강의 6의 Kleene 반복을 "의존성 기반으로 바뀐 노드만 재계산"해 O(n·h·k)로 효율화합니다 — 이 워크리스트가 강의 11의 cubic, Assignment 4, 거의 모든 실전 분석의 엔진입니다.
 
 ---
 
-## 핵심 용어 정리
+## 마치며
 
-| 용어 | 한국어 | 설명 |
-|------|--------|------|
-| Dataflow Analysis | 데이터흐름 분석 | 프로그램의 변수 값 범위를 추적하는 정적 분석 기법 |
-| Lattice | 격자 | 순서 관계를 가진 수학적 구조 |
-| Transfer Function | 전이 함수 | 각 노드에서의 추상 상태 변화를 정의 |
-| Fixed Point | 고정점 | f(x) = x를 만족하는 점 |
-| Monotone Function | 단조 함수 | x ≤ y이면 f(x) ≤ f(y)를 만족 |
-| JOIN | 조인 | 여러 경로의 추상 상태를 합침 |
-| Sign Analysis | 부호 분석 | 변수의 부호(-/0/+)를 추적 |
-| Constant Propagation | 상수 전파 | 변수의 정확한 정수값을 추적 |
-| Worklist | 작업 목록 | 재계산이 필요한 노드들의 목록 |
-| CFG | 제어흐름 그래프 | 프로그램의 실행 경로를 나타내는 그래프 |
-
+강의 7은 강의 5~6의 추상 이론을 **데이터플로우 분석**이라는 실전 프레임워크로 구체화합니다. 핵심 한 줄: **"CFG 각 노드에 격자 변수를 두고, JOIN(선행자 합치기)과 전이 함수로 단조 제약을 세운 뒤, 워크리스트 알고리즘으로 영향받는 노드만 재계산하며 최소 고정점을 O(n·h·k)에 구한다."** 부호 분석과 상수 전파는 같은 틀의 두 인스턴스이며, 워크리스트는 이후 모든 분석(cubic·포인터·Assignment 4)의 공통 엔진입니다. 시험에서는 (a) 단조 프레임워크의 구성요소와 인스턴스화(슬2~4), (b) JOIN의 정의와 분기 합류 처리(슬7~8), (c) 전이 함수(JOIN→eval→갱신)와 추상 연산자 op̂의 건전·단조성(슬9~10·14~15), (d) 단순/Round Robin/Chaotic/워크리스트 알고리즘의 차이와 dep의 역할(슬23~32), (e) O(n·h·k) 복잡도와 높이의 역할(슬33)이 단골입니다.
